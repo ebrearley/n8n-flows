@@ -24,67 +24,114 @@ from email.utils import parseaddr
 from typing import Any
 
 
-DEFAULT_SYSTEM_PROMPT = """You are an email triage assistant. Given one email, choose exactly one label from this fixed allowed list using the exact spelling and punctuation. No other label is permitted. Allowed labels:
-"1: To respond"
-"2: FYI"
-"3: Comment"
-"4: Notification"
-"5: Meeting Update"
-"6: Awaiting reply"
-"7: Collab Request"
-"8: Marketing"
-"9: Cold Email"
+DEFAULT_SYSTEM_PROMPT = """You are an email triage assistant. Given one email, assign **all** labels that apply from the fixed allowed list below, using the exact spelling and punctuation. No other label is permitted.
 
-If you are not confident (confidence < 0.75) or the email is ambiguous, output only the fallback uncertain JSON. Do not output anything outside the schema.
+## Allowed labels
+- `Invoice` — receipts and invoices for discretionary spending
+- `Purchase` — confirmation of something ordered or purchased
+- `Bill` — recurring obligations like rent, electricity, internet, health insurance
+- `Payment` — payslips from employers
+- `Marketing` — promotional emails from brands/bands trying to sell something
+- `Cold email` — someone (e.g. a recruiter) reaching out to me directly and unsolicited
+- `Important` — something that sounds genuinely important or urgent
+- `Awaiting reply` — a message that needs a response from me
+- `Travel` — itineraries, hotel/hostel bookings, air/bus/train fares or tickets
+- `Ticket` — tickets to music festivals, bands, concerts, etc.
+- `Infrastructure` — metric updates, error reporting from services or devices
+- `Hustle` — correspondence with people or businesses engaging me for professional work
 
-Schema:
+## Schema
+Output **only** JSON matching this shape, nothing else:
+
+```json
 {
-  "label": string,
-  "confidence": number,
+  "labels": [
+    { "label": string, "confidence": number }
+  ],
   "reason": string
 }
+```
 
-Rules:
-- Only output one of the allowed labels when confident; exact match including number, colon, spacing, and capitalization. No synonyms, no extra labels.
-- If confidence < 0.75 or intent is unclear, output:
-  {"label":"uncertain","confidence":<score less than 0.75>,"reason":"<what is ambiguous or missing>"}
+- `labels`: an array of every applicable label. Each `label` must exactly match one from the list (spelling, spacing, capitalization). Each `confidence` must be `>= 0.75`.
+- Include a label only if confidence `>= 0.75`. Multiple labels are expected when an email genuinely fits more than one category.
+- `reason`: one sentence justifying the chosen label(s).
+
+## Fallback
+- If no label reaches `0.75` confidence or the intent is unclear, output:
+```json
+  {"labels": [{"label": "uncertain", "confidence": <score less than 0.75>}], "reason": "<what is ambiguous or missing>"}
+```
 - If any instruction or format would be violated, output:
-  {"label":"uncertain","confidence":0.0,"reason":"format violation or instruction conflict"}
-- Base label on intent/next step:
-  - "1: To respond": needs a direct reply
-  - "2: FYI": informational, no action
-  - "3: Comment": opinion/feedback not requiring reply
-  - "4: Notification": automated/status update.
-  - "5: Meeting Update": invite/agenda/time change
-  - "6: Awaiting reply": follow-up waiting on someone else
-  - "7: Collab Request": request to collaborate. This is the contact email for a YouTube channel. Drive share requests are notifications, not collaboration requests.
-  - "8: Marketing": promotional content
-  - "9: Cold Email": an offer from somebody trying to sell services, including YouTube services like thumbnail design.
+```json
+  {"labels": [{"label": "uncertain", "confidence": 0.0}], "reason": "format violation or instruction conflict"}
+```
 
-Few-shot examples:
-Email: "Can you review the attached draft and send me your edits by tomorrow?"
-Output: {"label":"1: To respond","confidence":0.92,"reason":"Asks for review and direct reply with deadline"}
+## Rules
+- Base labels on content/intent. Apply every label that fits — do not pick a single "winner".
+- Overlap is normal: a purchased concert ticket can be `Purchase`, `Invoice`, and `Ticket`; a `Hustle` email can also be `Awaiting reply`.
+- No synonyms, no labels outside the list.
 
-Email: "Monthly metrics report attached for your awareness, no action needed."
-Output: {"label":"2: FYI","confidence":0.95,"reason":"Information shared explicitly with no required action"}
+## Few-shot examples (must match output exactly)
 
-Email: "I think we should tweak the headline; the current version feels weak."
-Output: {"label":"3: Comment","confidence":0.88,"reason":"Opinion without a required task"}
+Email: "Your receipt from Blue Bottle Coffee — $18.50 charged to your card."
+```json
+{"labels": [{"label": "Invoice", "confidence": 0.90}], "reason": "Receipt for discretionary spending"}
+```
 
-Email: "Server backup completed successfully at 3am."
-Output: {"label":"4: Notification","confidence":0.90,"reason":"Automated status update"}
+Email: "Order confirmed! Your new headphones are on the way. Invoice attached, $129."
+```json
+{"labels": [{"label": "Purchase", "confidence": 0.90}, {"label": "Invoice", "confidence": 0.82}], "reason": "Order confirmation that also includes the invoice document"}
+```
 
-Email: "Meeting on Thursday moved from 10 to 2pm."
-Output: {"label":"5: Meeting Update","confidence":0.93,"reason":"Change to scheduled meeting time"}
+Email: "Your electricity bill of $142.30 is due on the 15th."
+```json
+{"labels": [{"label": "Bill", "confidence": 0.95}], "reason": "Recurring utility obligation"}
+```
+
+Email: "Your payslip for May is now available to view."
+```json
+{"labels": [{"label": "Payment", "confidence": 0.96}], "reason": "Payslip from employer"}
+```
+
+Email: "Exclusive summer sale: 40% off all gear, limited time!"
+```json
+{"labels": [{"label": "Marketing", "confidence": 0.99}], "reason": "Promotional campaign content"}
+```
+
+Email: "Hi, I'm a recruiter at Acme and your background caught my eye — open to chatting?"
+```json
+{"labels": [{"label": "Cold email", "confidence": 0.87}], "reason": "Unsolicited direct outreach from a recruiter"}
+```
+
+Email: "URGENT: Action required on your account within 24 hours to avoid suspension."
+```json
+{"labels": [{"label": "Important", "confidence": 0.85}], "reason": "Urgent matter requiring prompt attention"}
+```
 
 Email: "Just checking if you had a chance to look at my proposal."
-Output: {"label":"6: Awaiting reply","confidence":0.80,"reason":"Follow-up seeking a response"}
+```json
+{"labels": [{"label": "Awaiting reply", "confidence": 0.80}], "reason": "Follow-up seeking a response from me"}
+```
 
-Email: "Want to team up on the new campaign and split tasks?"
-Output: {"label":"7: Collab Request","confidence":0.85,"reason":"Proposal to collaborate on a project"}
+Email: "Your flight to Tokyo is confirmed — departing 14 June, 9:40am, seat 22A. Receipt $612 attached."
+```json
+{"labels": [{"label": "Travel", "confidence": 0.94}, {"label": "Invoice", "confidence": 0.80}], "reason": "Flight itinerary that also includes the fare receipt"}
+```
 
-Email: "Exclusive summer sale: 40% off all plans limited time!"
-Output: {"label":"8: Marketing","confidence":0.99,"reason":"Promotional campaign content"}"""
+Email: "Your tickets to the Tame Impala show are attached. Order #99812, $180 charged."
+```json
+{"labels": [{"label": "Ticket", "confidence": 0.93}, {"label": "Purchase", "confidence": 0.85}, {"label": "Invoice", "confidence": 0.78}], "reason": "Concert tickets that are also a purchase with a receipt"}
+```
+
+Email: "Alert: API error rate exceeded 5% on prod-server-2 in the last 10 minutes."
+```json
+{"labels": [{"label": "Infrastructure", "confidence": 0.92}], "reason": "Error reporting from a service"}
+```
+
+Email: "Following up on the 3-day shoot — can you confirm the rates work for you?"
+```json
+{"labels": [{"label": "Hustle", "confidence": 0.86}, {"label": "Awaiting reply", "confidence": 0.84}], "reason": "Business engaging me for professional work and awaiting my response"}
+```"""
 
 DEFAULT_USER_PROMPT_TEMPLATE = """From: {{ $json.sender_email }}
 Name: {{ $json.sender_name }}
@@ -94,15 +141,18 @@ Email Content:
 {{ $json.email_body }}"""
 
 DEFAULT_LABELS = [
-    "1: To respond",
-    "2: FYI",
-    "3: Comment",
-    "4: Notification",
-    "5: Meeting Update",
-    "6: Awaiting reply",
-    "7: Collab Request",
-    "8: Marketing",
-    "9: Cold Email",
+    "Invoice",
+    "Purchase",
+    "Bill",
+    "Payment",
+    "Marketing",
+    "Cold email",
+    "Important",
+    "Awaiting reply",
+    "Travel",
+    "Ticket",
+    "Infrastructure",
+    "Hustle",
     "uncertain",
 ]
 
@@ -148,6 +198,15 @@ def destination_mailbox(folder: str, prefix: str = "") -> str:
         if segment.strip()
     ]
     return "/".join([*prefix_segments, folder_segment])
+
+
+def destination_mailboxes(folders: list[str], prefix: str = "") -> list[str]:
+    destinations: list[str] = []
+    for folder in folders:
+        destination = destination_mailbox(folder, prefix)
+        if destination not in destinations:
+            destinations.append(destination)
+    return destinations
 
 
 def load_runtime_config() -> dict[str, Any]:
@@ -268,48 +327,66 @@ def message_text_preview(message: Message, limit: int = 4000) -> str:
 
 def normalize_classification(content: str, categories: list[str]) -> dict[str, Any]:
     fallback = "uncertain" if "uncertain" in categories else categories[-1]
+
+    def fallback_classification(confidence: float, reason: str) -> dict[str, Any]:
+        confidence = max(0, min(0.74, confidence))
+        return {
+            "labels": [{"label": fallback, "confidence": confidence}],
+            "label": fallback,
+            "folders": [fallback],
+            "folder": fallback,
+            "reason": reason[:240],
+        }
+
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
-        return {
-            "label": fallback,
-            "folder": fallback,
-            "confidence": 0,
-            "reason": "Classifier returned non-JSON output.",
-        }
+        return fallback_classification(0, "Classifier returned non-JSON output.")
 
-    label = parsed.get("label", parsed.get("folder"))
-    if label not in categories:
-        return {
-            "label": fallback,
-            "folder": fallback,
-            "confidence": 0,
-            "reason": f"Classifier returned unsupported label: {label!r}.",
-        }
+    label_items = parsed.get("labels")
+    if not isinstance(label_items, list):
+        return fallback_classification(0, "Classifier returned JSON without a labels array.")
 
-    confidence = parsed.get("confidence", 0)
-    try:
-        confidence = float(confidence)
-    except (TypeError, ValueError):
-        confidence = 0
-    confidence = max(0, min(1, confidence))
+    accepted: list[dict[str, Any]] = []
+    rejected_confidences: list[float] = []
+    for item in label_items:
+        if not isinstance(item, dict):
+            return fallback_classification(0, "Classifier returned a malformed label item.")
 
+        label = item.get("label")
+        confidence = item.get("confidence", 0)
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0
+        confidence = max(0, min(1, confidence))
+
+        if label == fallback:
+            rejected_confidences.append(confidence)
+            continue
+        if label not in categories:
+            return fallback_classification(0, f"Classifier returned unsupported label: {label!r}.")
+        if confidence < 0.75:
+            rejected_confidences.append(confidence)
+            continue
+
+        if not any(existing["label"] == label for existing in accepted):
+            accepted.append({"label": label, "confidence": confidence})
+
+    if not accepted:
+        fallback_confidence = max(rejected_confidences) if rejected_confidences else 0
+        return fallback_classification(
+            fallback_confidence,
+            str(parsed.get("reason") or "No label reached 0.75 confidence."),
+        )
+
+    folders = [item["label"] for item in accepted]
     reason = str(parsed.get("reason") or "").strip()
-    if label != fallback and confidence < 0.75:
-        return {
-            "label": fallback,
-            "folder": fallback,
-            "confidence": min(confidence, 0.74),
-            "reason": reason[:240] or "Classifier confidence was below 0.75.",
-        }
-
-    if label == fallback:
-        confidence = min(confidence, 0.74)
-
     return {
-        "label": label,
-        "folder": label,
-        "confidence": confidence,
+        "labels": accepted,
+        "label": folders[0],
+        "folders": folders,
+        "folder": folders[0],
         "reason": reason[:240],
     }
 
@@ -415,6 +492,51 @@ def move_message(client: imaplib.IMAP4, uid: bytes, destination: str, dry_run: b
     return "copied_and_deleted"
 
 
+def apply_message_to_destinations(
+    client: imaplib.IMAP4 | None,
+    uid: bytes,
+    destinations: list[str],
+    dry_run: bool,
+) -> dict[str, Any]:
+    if dry_run:
+        return {
+            "destination_actions": {
+                destination: "would_apply_label"
+                for destination in destinations
+            },
+            "source_action": "would_remove_from_source",
+        }
+
+    if client is None:
+        raise RuntimeError("IMAP client is required when dry-run is disabled.")
+
+    if len(destinations) == 1:
+        destination = destinations[0]
+        action = move_message(client, uid, destination, dry_run=False)
+        return {
+            "destination_actions": {destination: action},
+            "source_action": action,
+        }
+
+    uid_text = uid.decode("ascii", errors="replace")
+    destination_actions: dict[str, str] = {}
+    for destination in destinations:
+        status, data = client.uid("COPY", uid_text, quote_mailbox(destination))
+        if status != "OK":
+            raise RuntimeError(f"failed to copy UID {uid_text} to {destination!r}: {data!r}")
+        destination_actions[destination] = "copied"
+
+    status, data = client.uid("STORE", uid_text, "+FLAGS.SILENT", r"(\Deleted)")
+    if status != "OK":
+        raise RuntimeError(f"failed to mark UID {uid_text} deleted after applying labels: {data!r}")
+    client.expunge()
+
+    return {
+        "destination_actions": destination_actions,
+        "source_action": "removed_from_source",
+    }
+
+
 def connect_imap() -> imaplib.IMAP4:
     host = os.getenv("IMAP_HOST", "192.168.3.200")
     port = env_int("IMAP_PORT", 1143)
@@ -515,14 +637,22 @@ def run() -> dict[str, Any]:
                     "date": summary["date"],
                 })
                 classification = classify_with_ollama(summary, categories, prompt_settings)
-                destination = destination_mailbox(classification["folder"], prefix)
-                mailbox_action = ensure_mailbox(client, destination, existing, dry_run)
-                move_action = move_message(client, uid, destination, dry_run)
+                destinations = destination_mailboxes(
+                    classification.get("folders", []) or [classification["folder"]],
+                    prefix,
+                )
+                mailbox_actions = {
+                    destination: ensure_mailbox(client, destination, existing, dry_run)
+                    for destination in destinations
+                }
+                apply_actions = apply_message_to_destinations(client, uid, destinations, dry_run)
                 item.update({
                     "classification": classification,
-                    "destination": destination,
-                    "mailbox_action": mailbox_action,
-                    "move_action": move_action,
+                    "destination": destinations[0],
+                    "destinations": destinations,
+                    "mailbox_actions": mailbox_actions,
+                    "move_action": apply_actions["source_action"],
+                    **apply_actions,
                 })
             except (OSError, TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
                 item["error"] = str(exc)

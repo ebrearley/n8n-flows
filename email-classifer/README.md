@@ -18,7 +18,7 @@ The n8n workflow is:
 Manual Trigger -> Configure classification prompt -> Execute Command -> email_classifier.py
 ```
 
-The prompt node keeps `systemPrompt` and `userPromptTemplate` editable in n8n. The Execute Command node passes those values into the script, which connects to IMAP, fetches the latest messages, asks local Ollama to classify each email, creates missing folders if live moves are enabled, and moves messages. It defaults to dry-run mode.
+The prompt node keeps `systemPrompt` and `userPromptTemplate` editable in n8n. The Execute Command node passes those values into the script, which connects to IMAP, fetches the latest messages, asks local Ollama to classify each email, creates missing folders if live moves are enabled, and applies every confident label returned by the model. It defaults to dry-run mode.
 
 ## Required n8n Environment
 
@@ -44,7 +44,7 @@ Optional:
 
 ```bash
 EMAIL_CLASSIFIER_FOLDER_PREFIX=AI
-EMAIL_CLASSIFIER_LABELS=1: To respond,2: FYI,3: Comment,4: Notification,5: Meeting Update,6: Awaiting reply,7: Collab Request,8: Marketing,9: Cold Email,uncertain
+EMAIL_CLASSIFIER_LABELS=Invoice,Purchase,Bill,Payment,Marketing,Cold email,Important,Awaiting reply,Travel,Ticket,Infrastructure,Hustle,uncertain
 EMAIL_CLASSIFIER_SYSTEM_PROMPT="..."
 EMAIL_CLASSIFIER_USER_PROMPT_TEMPLATE="..."
 IMAP_SSL=false
@@ -68,15 +68,18 @@ Do not execute the workflow against the mailbox until the destination labels/fol
 
 Default labels:
 
-- `1: To respond`
-- `2: FYI`
-- `3: Comment`
-- `4: Notification`
-- `5: Meeting Update`
-- `6: Awaiting reply`
-- `7: Collab Request`
-- `8: Marketing`
-- `9: Cold Email`
+- `Invoice`
+- `Purchase`
+- `Bill`
+- `Payment`
+- `Marketing`
+- `Cold email`
+- `Important`
+- `Awaiting reply`
+- `Travel`
+- `Ticket`
+- `Infrastructure`
+- `Hustle`
 - `uncertain`
 
 ## Local Tests

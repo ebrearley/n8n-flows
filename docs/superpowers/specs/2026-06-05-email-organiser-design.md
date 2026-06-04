@@ -29,28 +29,31 @@ Workflow-as-code lives in `email-classifer/`:
 6. For each message, script fetches headers and a small body preview.
 7. The script renders the user prompt template with `sender_email`, `sender_name`, `email_subject`, and `email_body`.
 8. The script calls local Ollama `/api/chat` with `stream=false`, `format=json`, `temperature=0`, and `keep_alive=-1`.
-9. Ollama returns strict JSON with `label`, `confidence`, and `reason`.
-10. The script validates the label against the allowed labels and falls back to `uncertain` for unknown, invalid, ambiguous, or low-confidence output.
-11. Script creates the destination folder if it does not exist and live moves are enabled.
-12. Script moves the message with `UID MOVE`; if unsupported, it falls back to `UID COPY`, `+FLAGS.SILENT (\Deleted)`, and `EXPUNGE`.
+9. Ollama returns strict JSON with `labels`, `confidence` per label, and `reason`.
+10. The script validates every label against the allowed labels and falls back to `uncertain` for unknown, invalid, ambiguous, or low-confidence output.
+11. Script creates every destination folder if it does not exist and live moves are enabled.
+12. Script applies all confident labels. For one label it moves the message; for multiple labels it copies to each destination and removes the source message.
 13. Script prints a JSON summary for n8n execution output.
 
 ## Initial Classification Labels
 
 Default labels:
 
-- `1: To respond`
-- `2: FYI`
-- `3: Comment`
-- `4: Notification`
-- `5: Meeting Update`
-- `6: Awaiting reply`
-- `7: Collab Request`
-- `8: Marketing`
-- `9: Cold Email`
+- `Invoice`
+- `Purchase`
+- `Bill`
+- `Payment`
+- `Marketing`
+- `Cold email`
+- `Important`
+- `Awaiting reply`
+- `Travel`
+- `Ticket`
+- `Infrastructure`
+- `Hustle`
 - `uncertain`
 
-The Ollama prompt must never invent labels. The implementation should prefer `uncertain` over over-classifying and enforce the confidence threshold after parsing.
+The Ollama prompt must never invent labels. The implementation should preserve all confident labels, prefer `uncertain` when no label reaches the threshold, and enforce the confidence threshold after parsing.
 
 ## Safety
 

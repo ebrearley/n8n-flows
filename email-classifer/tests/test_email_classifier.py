@@ -22,39 +22,65 @@ class EmailClassifierTests(unittest.TestCase):
 
     def test_normalizes_valid_ollama_json(self):
         result = classifier.normalize_classification(
-            json.dumps({"label": "1: To respond", "confidence": 0.82, "reason": "Reply needed"}),
-            ["1: To respond", "uncertain"],
+            json.dumps({
+                "labels": [
+                    {"label": "Purchase", "confidence": 0.90},
+                    {"label": "Invoice", "confidence": 0.82},
+                ],
+                "reason": "Order confirmation that also includes the invoice document",
+            }),
+            ["Purchase", "Invoice", "uncertain"],
         )
 
-        self.assertEqual(result["label"], "1: To respond")
-        self.assertEqual(result["folder"], "1: To respond")
-        self.assertEqual(result["confidence"], 0.82)
-        self.assertEqual(result["reason"], "Reply needed")
+        self.assertEqual(result["labels"], [
+            {"label": "Purchase", "confidence": 0.90},
+            {"label": "Invoice", "confidence": 0.82},
+        ])
+        self.assertEqual(result["folders"], ["Purchase", "Invoice"])
+        self.assertEqual(result["label"], "Purchase")
+        self.assertEqual(result["folder"], "Purchase")
+        self.assertEqual(result["reason"], "Order confirmation that also includes the invoice document")
 
     def test_rejects_unknown_or_invalid_ollama_output(self):
         for content in (
             "not json",
-            json.dumps({"label": "Unknown", "confidence": 0.9, "reason": "x"}),
+            json.dumps({"labels": [{"label": "Unknown", "confidence": 0.9}], "reason": "x"}),
             json.dumps({"confidence": 0.9}),
         ):
-            result = classifier.normalize_classification(content, ["1: To respond", "uncertain"])
+            result = classifier.normalize_classification(content, ["Purchase", "uncertain"])
             self.assertEqual(result["label"], "uncertain")
             self.assertEqual(result["folder"], "uncertain")
-            self.assertEqual(result["confidence"], 0)
+            self.assertEqual(result["labels"], [{"label": "uncertain", "confidence": 0}])
 
     def test_rejects_low_confidence_specific_labels(self):
         result = classifier.normalize_classification(
-            json.dumps({"label": "8: Marketing", "confidence": 0.4, "reason": "weak signal"}),
-            ["8: Marketing", "uncertain"],
+            json.dumps({"labels": [{"label": "Marketing", "confidence": 0.4}], "reason": "weak signal"}),
+            ["Marketing", "uncertain"],
         )
 
         self.assertEqual(result["label"], "uncertain")
-        self.assertLess(result["confidence"], 0.75)
+        self.assertLess(result["labels"][0]["confidence"], 0.75)
 
     def test_parses_categories_from_environment_value(self):
-        categories = classifier.parse_categories("1: To respond, 2: FYI")
+        categories = classifier.parse_categories("Invoice, Purchase")
 
-        self.assertEqual(categories, ["1: To respond", "2: FYI", "uncertain"])
+        self.assertEqual(categories, ["Invoice", "Purchase", "uncertain"])
+
+    def test_dry_run_application_reports_all_destinations(self):
+        result = classifier.apply_message_to_destinations(
+            None,
+            b"123",
+            ["Invoice", "Ticket"],
+            dry_run=True,
+        )
+
+        self.assertEqual(result, {
+            "destination_actions": {
+                "Invoice": "would_apply_label",
+                "Ticket": "would_apply_label",
+            },
+            "source_action": "would_remove_from_source",
+        })
 
     def test_renders_custom_user_prompt_template(self):
         summary = {

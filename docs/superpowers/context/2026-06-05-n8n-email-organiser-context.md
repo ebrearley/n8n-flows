@@ -64,19 +64,22 @@ User-provided Ollama endpoint and model:
 - Model: `gemma4-26b:4090`
 - Keep loaded: `OLLAMA_KEEP_ALIVE=-1`
 
-The classifier calls Ollama `/api/chat` with `stream=false`, `format=json`, `temperature=0`, and a conservative prompt that falls back to `uncertain`.
+The classifier calls Ollama `/api/chat` with `stream=false`, `format=json`, `temperature=0`, and a conservative multi-label prompt that falls back to `uncertain`.
 
 Default labels:
 
-- `1: To respond`
-- `2: FYI`
-- `3: Comment`
-- `4: Notification`
-- `5: Meeting Update`
-- `6: Awaiting reply`
-- `7: Collab Request`
-- `8: Marketing`
-- `9: Cold Email`
+- `Invoice`
+- `Purchase`
+- `Bill`
+- `Payment`
+- `Marketing`
+- `Cold email`
+- `Important`
+- `Awaiting reply`
+- `Travel`
+- `Ticket`
+- `Infrastructure`
+- `Hustle`
 - `uncertain`
 
 ## Node Discovery Notes
