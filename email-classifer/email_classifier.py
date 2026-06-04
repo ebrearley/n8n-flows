@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Manual IMAP email organizer for n8n Execute Command.
 
-Reads recent IMAP messages, asks a local Ollama model to classify each one, and
-moves messages into matching folders. Defaults to dry-run mode.
+Reads IMAP messages in batches, asks a local Ollama model to classify each one,
+applies matching labels plus a state label, and repeats until the source mailbox
+has no more processable messages. Defaults to dry-run mode.
 """
 
 from __future__ import annotations
@@ -156,6 +157,8 @@ DEFAULT_LABELS = [
     "uncertain",
 ]
 
+DEFAULT_STATE_LABEL = "Classified"
+
 
 def parse_categories(value: str | None) -> list[str]:
     if not value:
@@ -207,6 +210,30 @@ def destination_mailboxes(folders: list[str], prefix: str = "") -> list[str]:
         if destination not in destinations:
             destinations.append(destination)
     return destinations
+
+
+def classification_destinations(
+    classification: dict[str, Any],
+    state_label: str,
+    prefix: str = "",
+) -> list[str]:
+    destinations = destination_mailboxes(
+        list(classification.get("folders") or [classification["folder"]]),
+        prefix,
+    )
+    if state_label:
+        state_destination = destination_mailbox(state_label)
+        if state_destination not in destinations:
+            destinations.append(state_destination)
+    return destinations
+
+
+def uid_text(uid: bytes) -> str:
+    return uid.decode("ascii", errors="replace")
+
+
+def unattempted_uids(uids: list[bytes], attempted: set[str]) -> list[bytes]:
+    return [uid for uid in uids if uid_text(uid) not in attempted]
 
 
 def load_runtime_config() -> dict[str, Any]:
@@ -597,23 +624,86 @@ def fetch_message_summary(client: imaplib.IMAP4, uid: bytes) -> dict[str, str]:
     }
 
 
-def run() -> dict[str, Any]:
-    dry_run = env_bool("EMAIL_CLASSIFIER_DRY_RUN", True)
-    source_mailbox = os.getenv("EMAIL_CLASSIFIER_SOURCE_MAILBOX", "INBOX")
-    limit = env_int("EMAIL_CLASSIFIER_LIMIT", 50)
-    prefix = os.getenv("EMAIL_CLASSIFIER_FOLDER_PREFIX", "")
-    categories = parse_categories(
-        os.getenv("EMAIL_CLASSIFIER_LABELS")
-        or os.getenv("EMAIL_CLASSIFIER_CATEGORIES")
-    )
-    runtime_config = load_runtime_config()
-    prompt_settings = prompt_settings_from_config(runtime_config)
+def config_value(config: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in config:
+            value = config[key]
+            if value is not None and value != "":
+                return value
+    return None
 
+
+def sender_parts(value: Any) -> tuple[str, str, str]:
+    if isinstance(value, list) and value:
+        return sender_parts(value[0])
+    if isinstance(value, dict):
+        email_value = str(config_value(value, "email", "address", "mail") or "")
+        name_value = str(config_value(value, "name", "displayName") or "")
+        header = str(config_value(value, "value", "text") or "").strip()
+        if not email_value and header:
+            name_value, email_value = parseaddr(header)
+        return header or f"{name_value} <{email_value}>".strip(), name_value, email_value
+
+    header = str(value or "")
+    name_value, email_value = parseaddr(header)
+    return header, name_value, email_value
+
+
+def summary_from_trigger_item(item: dict[str, Any]) -> dict[str, str]:
+    sender_header, sender_name, sender_email = sender_parts(
+        config_value(item, "from", "sender", "sender_email", "senderEmail")
+    )
+    html_body = config_value(item, "html", "htmlBody")
+    text_body = config_value(item, "text", "textPlain", "body", "email_body", "emailBody")
+    if not text_body and html_body:
+        text_body = html_to_text(str(html_body))
+
+    subject = str(config_value(item, "subject", "email_subject", "emailSubject") or "")
+    uid_value = config_value(item, "uid", "imapUid", "messageUid")
+    message_id = str(config_value(item, "messageId", "message_id", "message-id") or "")
+
+    return {
+        "uid": str(uid_value or ""),
+        "message_id": message_id,
+        "from": sender_header,
+        "sender_email": sender_email,
+        "sender_name": sender_name,
+        "subject": subject,
+        "email_subject": subject,
+        "date": str(config_value(item, "date", "receivedDate") or ""),
+        "body_preview": str(text_body or "")[:4000],
+        "email_body": str(text_body or "")[:4000],
+    }
+
+
+def find_uid_by_message_id(client: imaplib.IMAP4, mailbox: str, message_id: str) -> str:
+    status, data = client.select(quote_mailbox(mailbox))
+    if status != "OK":
+        raise RuntimeError(f"failed to select mailbox {mailbox!r}: {data!r}")
+
+    escaped = '"' + message_id.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    status, data = client.uid("SEARCH", None, "HEADER", "Message-ID", escaped)
+    if status != "OK" or not data or not data[0]:
+        raise RuntimeError(f"failed to find triggered message by Message-ID {message_id!r}")
+    return data[0].split()[-1].decode("ascii", errors="replace")
+
+
+def run_trigger_item(
+    runtime_config: dict[str, Any],
+    dry_run: bool,
+    source_mailbox: str,
+    prefix: str,
+    categories: list[str],
+    state_label: str,
+    prompt_settings: dict[str, str],
+) -> dict[str, Any]:
     result: dict[str, Any] = {
+        "run_mode": "trigger_item",
         "dry_run": dry_run,
         "source_mailbox": source_mailbox,
-        "limit": limit,
+        "limit": 1,
         "categories": categories,
+        "state_label": state_label,
         "prompt_configured": bool(runtime_config),
         "processed": [],
         "errors": [],
@@ -623,47 +713,170 @@ def run() -> dict[str, Any]:
     try:
         existing = list_mailboxes(client)
         result["mailboxes"] = sorted(existing)
-        uids = fetch_latest_uids(client, source_mailbox, limit)
-        result["matched_count"] = len(uids)
+        summary = summary_from_trigger_item(runtime_config)
+        uid_string = summary.get("uid", "")
+        if not uid_string and summary.get("message_id"):
+            uid_string = find_uid_by_message_id(client, source_mailbox, summary["message_id"])
+        if not uid_string and not dry_run:
+            raise RuntimeError("Triggered email did not include an IMAP UID or Message-ID.")
 
-        for uid in uids:
-            uid_text = uid.decode("ascii", errors="replace")
-            item: dict[str, Any] = {"uid": uid_text}
-            try:
-                summary = fetch_message_summary(client, uid)
-                item.update({
-                    "from": summary["from"],
-                    "subject": summary["subject"],
-                    "date": summary["date"],
-                })
-                classification = classify_with_ollama(summary, categories, prompt_settings)
-                destinations = destination_mailboxes(
-                    classification.get("folders", []) or [classification["folder"]],
-                    prefix,
-                )
-                mailbox_actions = {
-                    destination: ensure_mailbox(client, destination, existing, dry_run)
-                    for destination in destinations
-                }
-                apply_actions = apply_message_to_destinations(client, uid, destinations, dry_run)
-                item.update({
-                    "classification": classification,
-                    "destination": destinations[0],
-                    "destinations": destinations,
-                    "mailbox_actions": mailbox_actions,
-                    "move_action": apply_actions["source_action"],
-                    **apply_actions,
-                })
-            except (OSError, TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
-                item["error"] = str(exc)
-                result["errors"].append({"uid": uid_text, "error": str(exc)})
-            result["processed"].append(item)
+        uid = uid_string.encode("ascii") if uid_string else b"0"
+        item: dict[str, Any] = {
+            "uid": uid_string,
+            "from": summary["from"],
+            "subject": summary["subject"],
+            "date": summary["date"],
+        }
+
+        classification = classify_with_ollama(summary, categories, prompt_settings)
+        destinations = classification_destinations(classification, state_label, prefix)
+        mailbox_actions = {
+            destination: ensure_mailbox(client, destination, existing, dry_run)
+            for destination in destinations
+        }
+        apply_actions = apply_message_to_destinations(client, uid, destinations, dry_run)
+        item.update({
+            "classification": classification,
+            "destination": destinations[0],
+            "destinations": destinations,
+            "mailbox_actions": mailbox_actions,
+            "move_action": apply_actions["source_action"],
+            **apply_actions,
+        })
+        result["processed"].append(item)
+        result["stopped_reason"] = "trigger_item_processed"
+    except (OSError, TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+        result["errors"].append({"error": str(exc)})
+        result["stopped_reason"] = "trigger_item_error"
     finally:
         try:
             client.logout()
         except Exception:
             pass
 
+    result["total_batches"] = 1 if result["processed"] else 0
+    result["total_processed"] = len(result["processed"])
+    result["total_errors"] = len(result["errors"])
+    return result
+
+
+def run() -> dict[str, Any]:
+    dry_run = env_bool("EMAIL_CLASSIFIER_DRY_RUN", True)
+    source_mailbox = os.getenv("EMAIL_CLASSIFIER_SOURCE_MAILBOX", "INBOX")
+    limit = env_int("EMAIL_CLASSIFIER_LIMIT", 50)
+    prefix = os.getenv("EMAIL_CLASSIFIER_FOLDER_PREFIX", "")
+    state_label = os.getenv("EMAIL_CLASSIFIER_STATE_LABEL", DEFAULT_STATE_LABEL).strip()
+    default_max_batches = 1 if dry_run else 0
+    max_batches = env_int("EMAIL_CLASSIFIER_MAX_BATCHES", default_max_batches)
+    categories = parse_categories(
+        os.getenv("EMAIL_CLASSIFIER_LABELS")
+        or os.getenv("EMAIL_CLASSIFIER_CATEGORIES")
+    )
+    runtime_config = load_runtime_config()
+    prompt_settings = prompt_settings_from_config(runtime_config)
+    run_mode = str(
+        runtime_config.get("runMode")
+        or runtime_config.get("run_mode")
+        or os.getenv("EMAIL_CLASSIFIER_RUN_MODE", "manual_backfill")
+    ).strip()
+
+    if run_mode == "trigger_item":
+        return run_trigger_item(
+            runtime_config,
+            dry_run,
+            source_mailbox,
+            prefix,
+            categories,
+            state_label,
+            prompt_settings,
+        )
+
+    result: dict[str, Any] = {
+        "run_mode": "manual_backfill",
+        "dry_run": dry_run,
+        "source_mailbox": source_mailbox,
+        "limit": limit,
+        "categories": categories,
+        "state_label": state_label,
+        "max_batches": max_batches,
+        "prompt_configured": bool(runtime_config),
+        "batches": [],
+        "processed": [],
+        "errors": [],
+    }
+
+    client = connect_imap()
+    try:
+        existing = list_mailboxes(client)
+        result["mailboxes"] = sorted(existing)
+        attempted: set[str] = set()
+        batch_index = 0
+
+        while True:
+            if max_batches and batch_index >= max_batches:
+                result["stopped_reason"] = "max_batches_reached"
+                break
+
+            uids = fetch_latest_uids(client, source_mailbox, limit)
+            processable_uids = unattempted_uids(uids, attempted)
+            if not processable_uids:
+                result["stopped_reason"] = "no_messages" if not uids else "no_new_processable_messages"
+                break
+
+            batch_index += 1
+            batch: dict[str, Any] = {
+                "index": batch_index,
+                "matched_count": len(uids),
+                "processable_count": len(processable_uids),
+                "processed": [],
+                "errors": [],
+            }
+
+            for uid in processable_uids:
+                uid_string = uid_text(uid)
+                attempted.add(uid_string)
+                item: dict[str, Any] = {"uid": uid_string, "batch": batch_index}
+                try:
+                    summary = fetch_message_summary(client, uid)
+                    item.update({
+                        "from": summary["from"],
+                        "subject": summary["subject"],
+                        "date": summary["date"],
+                    })
+                    classification = classify_with_ollama(summary, categories, prompt_settings)
+                    destinations = classification_destinations(classification, state_label, prefix)
+                    mailbox_actions = {
+                        destination: ensure_mailbox(client, destination, existing, dry_run)
+                        for destination in destinations
+                    }
+                    apply_actions = apply_message_to_destinations(client, uid, destinations, dry_run)
+                    item.update({
+                        "classification": classification,
+                        "destination": destinations[0],
+                        "destinations": destinations,
+                        "mailbox_actions": mailbox_actions,
+                        "move_action": apply_actions["source_action"],
+                        **apply_actions,
+                    })
+                except (OSError, TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+                    item["error"] = str(exc)
+                    error = {"uid": uid_string, "batch": batch_index, "error": str(exc)}
+                    batch["errors"].append(error)
+                    result["errors"].append(error)
+
+                batch["processed"].append(item)
+                result["processed"].append(item)
+
+            result["batches"].append(batch)
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+    result["total_batches"] = len(result["batches"])
+    result["total_processed"] = len(result["processed"])
+    result["total_errors"] = len(result["errors"])
     return result
 
 

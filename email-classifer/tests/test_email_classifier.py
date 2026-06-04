@@ -2,6 +2,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -70,7 +71,7 @@ class EmailClassifierTests(unittest.TestCase):
         result = classifier.apply_message_to_destinations(
             None,
             b"123",
-            ["Invoice", "Ticket"],
+            ["Invoice", "Ticket", "Classified"],
             dry_run=True,
         )
 
@@ -78,9 +79,24 @@ class EmailClassifierTests(unittest.TestCase):
             "destination_actions": {
                 "Invoice": "would_apply_label",
                 "Ticket": "would_apply_label",
+                "Classified": "would_apply_label",
             },
             "source_action": "would_remove_from_source",
         })
+
+    def test_appends_classified_state_label_to_destinations(self):
+        destinations = classifier.classification_destinations(
+            {"folders": ["Invoice", "Ticket"]},
+            state_label="Classified",
+            prefix="AI",
+        )
+
+        self.assertEqual(destinations, ["AI/Invoice", "AI/Ticket", "Classified"])
+
+    def test_filters_uids_already_attempted_in_current_run(self):
+        uids = classifier.unattempted_uids([b"10", b"11", b"12"], {"11"})
+
+        self.assertEqual(uids, [b"10", b"12"])
 
     def test_renders_custom_user_prompt_template(self):
         summary = {
@@ -118,6 +134,131 @@ class EmailClassifierTests(unittest.TestCase):
 
         self.assertEqual(settings["system_prompt"], "Custom system prompt")
         self.assertEqual(settings["user_prompt_template"], "Custom user prompt for {{subject}}")
+
+    def test_run_fetches_batches_until_no_messages_remain(self):
+        class FakeClient:
+            def logout(self):
+                return None
+
+        fetch_batches = [[b"1", b"2"], [b"2", b"3"], []]
+
+        def fetch_latest_uids(_client, _mailbox, _limit):
+            return fetch_batches.pop(0)
+
+        def fetch_message_summary(_client, uid):
+            uid_string = uid.decode("ascii")
+            return {
+                "from": "sender@example.com",
+                "sender_email": "sender@example.com",
+                "sender_name": "Sender",
+                "subject": f"Message {uid_string}",
+                "email_subject": f"Message {uid_string}",
+                "date": "Fri, 05 Jun 2026 10:00:00 +1000",
+                "email_body": "Body",
+            }
+
+        def apply_message(_client, _uid, destinations, _dry_run):
+            return {
+                "destination_actions": {
+                    destination: "applied"
+                    for destination in destinations
+                },
+                "source_action": "removed_from_source",
+            }
+
+        classification = {
+            "labels": [{"label": "Invoice", "confidence": 0.9}],
+            "label": "Invoice",
+            "folders": ["Invoice"],
+            "folder": "Invoice",
+            "reason": "test",
+        }
+
+        with mock.patch.dict(classifier.os.environ, {
+            "EMAIL_CLASSIFIER_DRY_RUN": "false",
+            "EMAIL_CLASSIFIER_LIMIT": "2",
+            "EMAIL_CLASSIFIER_MAX_BATCHES": "0",
+        }, clear=False), \
+            mock.patch.object(classifier, "load_runtime_config", return_value={}), \
+            mock.patch.object(classifier, "connect_imap", return_value=FakeClient()), \
+            mock.patch.object(classifier, "list_mailboxes", return_value={"Invoice", "Classified"}), \
+            mock.patch.object(classifier, "fetch_latest_uids", side_effect=fetch_latest_uids) as fetch_uids, \
+            mock.patch.object(classifier, "fetch_message_summary", side_effect=fetch_message_summary), \
+            mock.patch.object(classifier, "classify_with_ollama", return_value=classification), \
+            mock.patch.object(classifier, "ensure_mailbox", return_value="exists"), \
+            mock.patch.object(classifier, "apply_message_to_destinations", side_effect=apply_message):
+            result = classifier.run()
+
+        self.assertEqual(fetch_uids.call_count, 3)
+        self.assertEqual(result["total_batches"], 2)
+        self.assertEqual(result["total_processed"], 3)
+        self.assertEqual(result["stopped_reason"], "no_messages")
+        for item in result["processed"]:
+            self.assertIn("Classified", item["destinations"])
+
+    def test_builds_summary_from_imap_trigger_item(self):
+        summary = classifier.summary_from_trigger_item({
+            "uid": "42",
+            "messageId": "<abc@example.com>",
+            "from": "Sender Name <sender@example.com>",
+            "subject": "Sponsor inquiry",
+            "text": "Can you send your rates?",
+            "date": "Fri, 05 Jun 2026 10:00:00 +1000",
+        })
+
+        self.assertEqual(summary["uid"], "42")
+        self.assertEqual(summary["message_id"], "<abc@example.com>")
+        self.assertEqual(summary["sender_email"], "sender@example.com")
+        self.assertEqual(summary["sender_name"], "Sender Name")
+        self.assertEqual(summary["email_subject"], "Sponsor inquiry")
+        self.assertEqual(summary["email_body"], "Can you send your rates?")
+
+    def test_trigger_mode_classifies_one_trigger_item(self):
+        class FakeClient:
+            def logout(self):
+                return None
+
+        classification = {
+            "labels": [{"label": "Hustle", "confidence": 0.9}],
+            "label": "Hustle",
+            "folders": ["Hustle"],
+            "folder": "Hustle",
+            "reason": "test",
+        }
+
+        config = {
+            "runMode": "trigger_item",
+            "uid": "42",
+            "from": "Sender <sender@example.com>",
+            "subject": "Sponsor inquiry",
+            "text": "Can you send your rates?",
+            "date": "Fri, 05 Jun 2026 10:00:00 +1000",
+        }
+
+        def apply_message(_client, _uid, destinations, _dry_run):
+            return {
+                "destination_actions": {
+                    destination: "applied"
+                    for destination in destinations
+                },
+                "source_action": "removed_from_source",
+            }
+
+        with mock.patch.dict(classifier.os.environ, {
+            "EMAIL_CLASSIFIER_DRY_RUN": "false",
+        }, clear=False), \
+            mock.patch.object(classifier, "load_runtime_config", return_value=config), \
+            mock.patch.object(classifier, "connect_imap", return_value=FakeClient()), \
+            mock.patch.object(classifier, "list_mailboxes", return_value={"Hustle", "Classified"}), \
+            mock.patch.object(classifier, "classify_with_ollama", return_value=classification), \
+            mock.patch.object(classifier, "ensure_mailbox", return_value="exists"), \
+            mock.patch.object(classifier, "apply_message_to_destinations", side_effect=apply_message):
+            result = classifier.run()
+
+        self.assertEqual(result["run_mode"], "trigger_item")
+        self.assertEqual(result["total_processed"], 1)
+        self.assertEqual(result["processed"][0]["uid"], "42")
+        self.assertEqual(result["processed"][0]["destinations"], ["Hustle", "Classified"])
 
 
 if __name__ == "__main__":

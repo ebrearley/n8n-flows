@@ -1,12 +1,18 @@
 {
-  "name": "Email Organiser",
+  "name": "Email Organiser - IMAP Trigger",
   "nodes": [
     {
-      "parameters": {},
-      "id": "407ac5bc-e176-4343-bafe-16eadc8d9452",
-      "name": "When clicking 'Execute workflow'",
-      "type": "n8n-nodes-base.manualTrigger",
-      "typeVersion": 1,
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "nothing",
+        "format": "simple",
+        "downloadAttachments": false,
+        "options": {}
+      },
+      "id": "b32c0521-d4ef-411c-b4c8-f6dd5e08bb5b",
+      "name": "When email arrives in INBOX",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
       "position": [
         0,
         0
@@ -29,9 +35,9 @@
               "type": "string"
             },
             {
-              "id": "67f660bf-6639-4d39-a0b3-bdcc7820e215",
+              "id": "057ec724-28c3-4049-9ea6-9b4a69b242b0",
               "name": "runMode",
-              "value": "manual_backfill",
+              "value": "trigger_item",
               "type": "string"
             }
           ]
@@ -39,12 +45,12 @@
         "options": {},
         "includeOtherFields": true
       },
-      "id": "23f48240-1012-40d3-82b7-7186917f94a7",
+      "id": "40ab1f94-2296-430c-8f3d-f8d9c7358ef2",
       "name": "Configure classification prompt",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.3,
       "position": [
-        260,
+        300,
         0
       ]
     },
@@ -52,18 +58,18 @@
       "parameters": {
         "command": "=python3 \"${EMAIL_CLASSIFIER_SCRIPT:-/home/node/.n8n/email-classifer/email_classifier.py}\" <<'EMAIL_CLASSIFIER_CONFIG'\n{{ JSON.stringify($json) }}\nEMAIL_CLASSIFIER_CONFIG"
       },
-      "id": "8e7721a6-a578-4c8e-a336-af4b45f4c608",
+      "id": "e0b2cf85-46d9-4f9b-8cbe-28aa9a79962a",
       "name": "Classify latest IMAP emails",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        560,
+        600,
         0
       ]
     }
   ],
   "connections": {
-    "When clicking 'Execute workflow'": {
+    "When email arrives in INBOX": {
       "main": [
         [
           {

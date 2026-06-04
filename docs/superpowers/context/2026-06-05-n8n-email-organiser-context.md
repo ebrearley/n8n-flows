@@ -6,7 +6,7 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 ## Current Goal
 
-Build out the n8n workflow named `Email Organiser` so it can be run manually, pull the most recent 50 emails from an IMAP server, classify them with local Ollama, and move them into folders.
+Build out the n8n workflow named `Email Organiser` so it can first be run manually from the n8n **Execute workflow** button, pull emails from an IMAP server in batches of 50, classify them with local Ollama, add matching labels plus `Classified`, and continue until the inbox has no more processable messages. After the manual backfill, switch to an IMAP-triggered workflow that classifies one incoming email per trigger execution.
 
 ## Codex MCP Configuration
 
@@ -36,9 +36,15 @@ Workflow found via n8n MCP:
 Workflow-as-code artifacts were added under `email-classifer/`:
 
 - `workflow.json`: importable n8n workflow JSON for Manual Trigger -> Configure classification prompt -> Execute Command.
+- `workflow-imap-trigger.json`: importable n8n workflow JSON scaffold for Email Trigger (IMAP) -> Configure classification prompt -> Execute Command.
 - `email_classifier.py`: stdlib Python script run by the Execute Command node.
 - `tests/`: deterministic unit tests for local classifier helper behavior.
 - `README.md`: runtime environment and import instructions.
+
+Runtime modes:
+
+- `manual_backfill`: batch through the source mailbox 50 messages at a time until no processable messages remain.
+- `trigger_item`: classify one email item emitted by the IMAP trigger.
 
 ## IMAP Target
 
@@ -54,7 +60,9 @@ Credentials have not been provided in chat and should not be written into repo f
 
 Live IMAP folder discovery is runtime/integration behavior. Unit tests should not depend on the current live folder list from `192.168.3.200:1143`.
 
-Per user instruction, do not execute the workflow against the mailbox until the destination labels/folders have been set up in email.
+Per user instruction, do not execute the workflow against the mailbox until the destination labels/folders have been set up in email. The user has added a state label named `Classified`; the script should add it to each successfully classified email.
+
+Do not activate the IMAP-triggered workflow until the manual backfill has completed.
 
 ## Ollama Target
 
@@ -82,6 +90,10 @@ Default labels:
 - `Hustle`
 - `uncertain`
 
+State label:
+
+- `Classified`
+
 ## Node Discovery Notes
 
 n8n MCP node search found:
@@ -97,3 +109,4 @@ Because a generic IMAP action node was not found, the practical design is to use
 - Confirm whether to use `IMAP_USER` and `IMAP_PASSWORD` environment variables inside n8n.
 - Confirm labels/folders have been created in email before any workflow execution.
 - Confirm whether the first workflow execution should remain dry-run.
+- Confirm n8n host queue/concurrency config is set to allow only one production execution at a time before activating the IMAP trigger.
