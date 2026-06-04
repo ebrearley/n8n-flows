@@ -1,0 +1,88 @@
+{
+  "name": "Email Organiser",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "407ac5bc-e176-4343-bafe-16eadc8d9452",
+      "name": "When clicking 'Execute workflow'",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6ce2cc0c-20c2-4490-b42a-a3ff475e218f",
+              "name": "systemPrompt",
+              "value": "You are an email triage assistant. Given one email, choose exactly one label from this fixed allowed list using the exact spelling and punctuation. No other label is permitted. Allowed labels:\n\"1: To respond\"\n\"2: FYI\"\n\"3: Comment\"\n\"4: Notification\"\n\"5: Meeting Update\"\n\"6: Awaiting reply\"\n\"7: Collab Request\"\n\"8: Marketing\"\n\"9: Cold Email\"\n\nIf you are not confident (confidence < 0.75) or the email is ambiguous, output only the fallback uncertain JSON. Do not output anything outside the schema.\n\nSchema:\n{\n  \"label\": string,\n  \"confidence\": number,\n  \"reason\": string\n}\n\nRules:\n- Only output one of the allowed labels when confident; exact match including number, colon, spacing, and capitalization. No synonyms, no extra labels.\n- If confidence < 0.75 or intent is unclear, output:\n  {\"label\":\"uncertain\",\"confidence\":<score less than 0.75>,\"reason\":\"<what is ambiguous or missing>\"}\n- If any instruction or format would be violated, output:\n  {\"label\":\"uncertain\",\"confidence\":0.0,\"reason\":\"format violation or instruction conflict\"}\n- Base label on intent/next step:\n  - \"1: To respond\": needs a direct reply\n  - \"2: FYI\": informational, no action\n  - \"3: Comment\": opinion/feedback not requiring reply\n  - \"4: Notification\": automated/status update.\n  - \"5: Meeting Update\": invite/agenda/time change\n  - \"6: Awaiting reply\": follow-up waiting on someone else\n  - \"7: Collab Request\": request to collaborate. This is the contact email for a YouTube channel. Drive share requests are notifications, not collaboration requests.\n  - \"8: Marketing\": promotional content\n  - \"9: Cold Email\": an offer from somebody trying to sell services, including YouTube services like thumbnail design.\n\nFew-shot examples:\nEmail: \"Can you review the attached draft and send me your edits by tomorrow?\"\nOutput: {\"label\":\"1: To respond\",\"confidence\":0.92,\"reason\":\"Asks for review and direct reply with deadline\"}\n\nEmail: \"Monthly metrics report attached for your awareness, no action needed.\"\nOutput: {\"label\":\"2: FYI\",\"confidence\":0.95,\"reason\":\"Information shared explicitly with no required action\"}\n\nEmail: \"I think we should tweak the headline; the current version feels weak.\"\nOutput: {\"label\":\"3: Comment\",\"confidence\":0.88,\"reason\":\"Opinion without a required task\"}\n\nEmail: \"Server backup completed successfully at 3am.\"\nOutput: {\"label\":\"4: Notification\",\"confidence\":0.90,\"reason\":\"Automated status update\"}\n\nEmail: \"Meeting on Thursday moved from 10 to 2pm.\"\nOutput: {\"label\":\"5: Meeting Update\",\"confidence\":0.93,\"reason\":\"Change to scheduled meeting time\"}\n\nEmail: \"Just checking if you had a chance to look at my proposal.\"\nOutput: {\"label\":\"6: Awaiting reply\",\"confidence\":0.80,\"reason\":\"Follow-up seeking a response\"}\n\nEmail: \"Want to team up on the new campaign and split tasks?\"\nOutput: {\"label\":\"7: Collab Request\",\"confidence\":0.85,\"reason\":\"Proposal to collaborate on a project\"}\n\nEmail: \"Exclusive summer sale: 40% off all plans limited time!\"\nOutput: {\"label\":\"8: Marketing\",\"confidence\":0.99,\"reason\":\"Promotional campaign content\"}",
+              "type": "string"
+            },
+            {
+              "id": "1c7ba158-1ea4-40da-bacc-8303518c01e7",
+              "name": "userPromptTemplate",
+              "value": "From: {{ $json.sender_email }}\nName: {{ $json.sender_name }}\nSubject: {{ $json.email_subject }}\nEmail Content:\n\n{{ $json.email_body }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "23f48240-1012-40d3-82b7-7186917f94a7",
+      "name": "Configure classification prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=python3 \"${EMAIL_CLASSIFIER_SCRIPT:-/home/node/.n8n/email-classifer/email_classifier.py}\" <<'EMAIL_CLASSIFIER_CONFIG'\n{{ JSON.stringify($json) }}\nEMAIL_CLASSIFIER_CONFIG"
+      },
+      "id": "8e7721a6-a578-4c8e-a336-af4b45f4c608",
+      "name": "Classify latest IMAP emails",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        560,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "When clicking 'Execute workflow'": {
+      "main": [
+        [
+          {
+            "node": "Configure classification prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configure classification prompt": {
+      "main": [
+        [
+          {
+            "node": "Classify latest IMAP emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "pinData": {}
+}
