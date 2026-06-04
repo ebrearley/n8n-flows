@@ -7,12 +7,14 @@
         "postProcessAction": "nothing",
         "format": "simple",
         "downloadAttachments": false,
-        "options": {}
+        "options": {
+          "trackLastMessageId": true
+        }
       },
       "id": "b32c0521-d4ef-411c-b4c8-f6dd5e08bb5b",
-      "name": "When email arrives in INBOX",
+      "name": "Email Trigger (IMAP)",
       "type": "n8n-nodes-base.emailReadImap",
-      "typeVersion": 2,
+      "typeVersion": 2.1,
       "position": [
         0,
         0
@@ -69,7 +71,7 @@
     }
   ],
   "connections": {
-    "When email arrives in INBOX": {
+    "Email Trigger (IMAP)": {
       "main": [
         [
           {
