@@ -8,7 +8,8 @@
         "format": "simple",
         "downloadAttachments": false,
         "options": {
-          "trackLastMessageId": true
+          "trackLastMessageId": true,
+          "allowUnauthorizedCerts": true
         }
       },
       "id": "b32c0521-d4ef-411c-b4c8-f6dd5e08bb5b",
@@ -41,6 +42,54 @@
               "name": "runMode",
               "value": "trigger_item",
               "type": "string"
+            },
+            {
+              "id": "imap-host",
+              "name": "imapHost",
+              "value": "192.168.3.200",
+              "type": "string"
+            },
+            {
+              "id": "imap-port",
+              "name": "imapPort",
+              "value": 1143,
+              "type": "number"
+            },
+            {
+              "id": "imap-ssl",
+              "name": "imapSsl",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "imap-starttls",
+              "name": "imapStartTls",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "source-mailbox",
+              "name": "sourceMailbox",
+              "value": "INBOX",
+              "type": "string"
+            },
+            {
+              "id": "state-label",
+              "name": "stateLabel",
+              "value": "Classified",
+              "type": "string"
+            },
+            {
+              "id": "label-prefix",
+              "name": "labelPrefix",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "dry-run",
+              "name": "dryRun",
+              "value": false,
+              "type": "boolean"
             }
           ]
         },
@@ -61,7 +110,7 @@
         "command": "=python3 \"${EMAIL_CLASSIFIER_SCRIPT:-/home/node/.n8n/email-classifer/email_classifier.py}\" <<'EMAIL_CLASSIFIER_CONFIG'\n{{ JSON.stringify($json) }}\nEMAIL_CLASSIFIER_CONFIG"
       },
       "id": "e0b2cf85-46d9-4f9b-8cbe-28aa9a79962a",
-      "name": "Classify latest IMAP emails",
+      "name": "Classify and apply IMAP labels",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
@@ -86,7 +135,7 @@
       "main": [
         [
           {
-            "node": "Classify latest IMAP emails",
+            "node": "Classify and apply IMAP labels",
             "type": "main",
             "index": 0
           }

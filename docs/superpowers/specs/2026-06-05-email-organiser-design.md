@@ -3,6 +3,10 @@
 Date: 2026-06-05
 Workflow: `Email Organiser` (`fm6pLPnZWsGfK1oH`)
 
+## Current Revision
+
+Manual backfill has been removed. The active design is an automated `Email Trigger (IMAP)` workflow only: one incoming email is classified with local Ollama, then existing labels plus `Classified` are applied through IMAP. The workflow must not create labels, move messages, delete source messages, or expunge the mailbox. IMAP uses STARTTLS at `192.168.3.200:1143`.
+
 ## Objective
 
 Create a two-phase n8n email organiser. Phase one is a manually executed backfill workflow that starts when the user presses **Execute workflow**, reads messages from an IMAP mailbox in batches of 50, and organises them into labels/folders. Phase two, enabled only after the backfill, is an IMAP-triggered workflow that classifies one newly received email per trigger execution. Both phases should classify using local Ollama at `http://192.168.1.100:11434` with model `gemma4-26b:4090`, keep the classification prompts editable inside n8n, and add a `Classified` state label to each successfully classified email.

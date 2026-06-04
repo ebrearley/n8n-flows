@@ -4,6 +4,10 @@ Date: 2026-06-05
 Workspace: `/home/eric/source/n8n-flows`
 Repository: `https://github.com/ebrearley/n8n-flows`
 
+## Current Revision
+
+Manual backfill has been removed. `Email Organiser` is now an inactive automated `Email Trigger (IMAP)` workflow that classifies one incoming email at a time, then applies existing labels plus `Classified` through IMAP. It must not create labels, move messages, delete source messages, or expunge the mailbox. IMAP uses STARTTLS at `192.168.3.200:1143`.
+
 ## Current Goal
 
 Build out the n8n workflow named `Email Organiser` so it can first be run manually from the n8n **Execute workflow** button, pull emails from an IMAP server in batches of 50, classify them with local Ollama, add matching labels plus `Classified`, and continue until the inbox has no more processable messages. After the manual backfill, switch to an IMAP-triggered workflow that classifies one incoming email per trigger execution.

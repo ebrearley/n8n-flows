@@ -81,8 +81,52 @@ class EmailClassifierTests(unittest.TestCase):
                 "Ticket": "would_apply_label",
                 "Classified": "would_apply_label",
             },
-            "source_action": "would_remove_from_source",
+            "source_action": "would_keep_in_source",
         })
+
+    def test_label_application_copies_without_deleting_source(self):
+        class FakeClient:
+            def __init__(self):
+                self.commands = []
+                self.expunge_called = False
+
+            def uid(self, *args):
+                self.commands.append(args)
+                return "OK", [b"ok"]
+
+            def expunge(self):
+                self.expunge_called = True
+
+        client = FakeClient()
+
+        result = classifier.apply_message_to_destinations(
+            client,
+            b"123",
+            ["Invoice", "Classified"],
+            dry_run=False,
+        )
+
+        self.assertEqual(result, {
+            "destination_actions": {
+                "Invoice": "label_applied",
+                "Classified": "label_applied",
+            },
+            "source_action": "kept_in_source",
+        })
+        self.assertEqual(client.commands, [
+            ("COPY", "123", '"Invoice"'),
+            ("COPY", "123", '"Classified"'),
+        ])
+        self.assertFalse(client.expunge_called)
+
+    def test_missing_label_mailbox_fails_when_not_dry_run(self):
+        with self.assertRaisesRegex(RuntimeError, "does not exist"):
+            classifier.require_existing_mailbox("Invoice", {"Classified"}, dry_run=False)
+
+        self.assertEqual(
+            classifier.require_existing_mailbox("Invoice", {"Classified"}, dry_run=True),
+            "missing",
+        )
 
     def test_appends_classified_state_label_to_destinations(self):
         destinations = classifier.classification_destinations(
@@ -92,11 +136,6 @@ class EmailClassifierTests(unittest.TestCase):
         )
 
         self.assertEqual(destinations, ["AI/Invoice", "AI/Ticket", "Classified"])
-
-    def test_filters_uids_already_attempted_in_current_run(self):
-        uids = classifier.unattempted_uids([b"10", b"11", b"12"], {"11"})
-
-        self.assertEqual(uids, [b"10", b"12"])
 
     def test_renders_custom_user_prompt_template(self):
         summary = {
@@ -135,66 +174,22 @@ class EmailClassifierTests(unittest.TestCase):
         self.assertEqual(settings["system_prompt"], "Custom system prompt")
         self.assertEqual(settings["user_prompt_template"], "Custom user prompt for {{subject}}")
 
-    def test_run_fetches_batches_until_no_messages_remain(self):
-        class FakeClient:
-            def logout(self):
-                return None
+    def test_runtime_config_overrides_imap_endpoint_without_workflow_credentials(self):
+        fake_client = mock.MagicMock()
+        with mock.patch.object(classifier.imaplib, "IMAP4", return_value=fake_client) as imap4, \
+            mock.patch.dict(classifier.os.environ, {
+                "IMAP_USER": "env-user",
+                "IMAP_PASSWORD": "env-password",
+            }, clear=False):
+            classifier.connect_imap({
+                "imapHost": "192.168.3.200",
+                "imapPort": 1143,
+                "imapSsl": False,
+                "imapStartTls": False,
+            })
 
-        fetch_batches = [[b"1", b"2"], [b"2", b"3"], []]
-
-        def fetch_latest_uids(_client, _mailbox, _limit):
-            return fetch_batches.pop(0)
-
-        def fetch_message_summary(_client, uid):
-            uid_string = uid.decode("ascii")
-            return {
-                "from": "sender@example.com",
-                "sender_email": "sender@example.com",
-                "sender_name": "Sender",
-                "subject": f"Message {uid_string}",
-                "email_subject": f"Message {uid_string}",
-                "date": "Fri, 05 Jun 2026 10:00:00 +1000",
-                "email_body": "Body",
-            }
-
-        def apply_message(_client, _uid, destinations, _dry_run):
-            return {
-                "destination_actions": {
-                    destination: "applied"
-                    for destination in destinations
-                },
-                "source_action": "removed_from_source",
-            }
-
-        classification = {
-            "labels": [{"label": "Invoice", "confidence": 0.9}],
-            "label": "Invoice",
-            "folders": ["Invoice"],
-            "folder": "Invoice",
-            "reason": "test",
-        }
-
-        with mock.patch.dict(classifier.os.environ, {
-            "EMAIL_CLASSIFIER_DRY_RUN": "false",
-            "EMAIL_CLASSIFIER_LIMIT": "2",
-            "EMAIL_CLASSIFIER_MAX_BATCHES": "0",
-        }, clear=False), \
-            mock.patch.object(classifier, "load_runtime_config", return_value={}), \
-            mock.patch.object(classifier, "connect_imap", return_value=FakeClient()), \
-            mock.patch.object(classifier, "list_mailboxes", return_value={"Invoice", "Classified"}), \
-            mock.patch.object(classifier, "fetch_latest_uids", side_effect=fetch_latest_uids) as fetch_uids, \
-            mock.patch.object(classifier, "fetch_message_summary", side_effect=fetch_message_summary), \
-            mock.patch.object(classifier, "classify_with_ollama", return_value=classification), \
-            mock.patch.object(classifier, "ensure_mailbox", return_value="exists"), \
-            mock.patch.object(classifier, "apply_message_to_destinations", side_effect=apply_message):
-            result = classifier.run()
-
-        self.assertEqual(fetch_uids.call_count, 3)
-        self.assertEqual(result["total_batches"], 2)
-        self.assertEqual(result["total_processed"], 3)
-        self.assertEqual(result["stopped_reason"], "no_messages")
-        for item in result["processed"]:
-            self.assertIn("Classified", item["destinations"])
+        imap4.assert_called_once_with("192.168.3.200", 1143)
+        fake_client.login.assert_called_once_with("env-user", "env-password")
 
     def test_builds_summary_from_imap_trigger_item(self):
         summary = classifier.summary_from_trigger_item({
@@ -241,7 +236,7 @@ class EmailClassifierTests(unittest.TestCase):
                     destination: "applied"
                     for destination in destinations
                 },
-                "source_action": "removed_from_source",
+                "source_action": "kept_in_source",
             }
 
         with mock.patch.dict(classifier.os.environ, {
@@ -251,7 +246,7 @@ class EmailClassifierTests(unittest.TestCase):
             mock.patch.object(classifier, "connect_imap", return_value=FakeClient()), \
             mock.patch.object(classifier, "list_mailboxes", return_value={"Hustle", "Classified"}), \
             mock.patch.object(classifier, "classify_with_ollama", return_value=classification), \
-            mock.patch.object(classifier, "ensure_mailbox", return_value="exists"), \
+            mock.patch.object(classifier, "require_existing_mailbox", return_value="exists"), \
             mock.patch.object(classifier, "apply_message_to_destinations", side_effect=apply_message):
             result = classifier.run()
 
