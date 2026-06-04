@@ -25,7 +25,7 @@
             {
               "id": "1c7ba158-1ea4-40da-bacc-8303518c01e7",
               "name": "userPromptTemplate",
-              "value": "From: {{ $json.sender_email }}\nName: {{ $json.sender_name }}\nSubject: {{ $json.email_subject }}\nEmail Content:\n\n{{ $json.email_body }}",
+              "value": "={{ \"From: {{ $json.sender_email }}\\nName: {{ $json.sender_name }}\\nSubject: {{ $json.email_subject }}\\nEmail Content:\\n\\n{{ $json.email_body }}\" }}",
               "type": "string"
             },
             {
