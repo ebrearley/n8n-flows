@@ -2,46 +2,39 @@
   "name": "Email Organiser",
   "nodes": [
     {
-      "parameters": {
-        "mailbox": "INBOX",
-        "postProcessAction": "nothing",
-        "format": "simple",
-        "downloadAttachments": false,
-        "options": {
-          "trackLastMessageId": true,
-          "allowUnauthorizedCerts": true
-        }
-      },
-      "id": "b32c0521-d4ef-411c-b4c8-f6dd5e08bb5b",
-      "name": "Email Trigger (IMAP)",
-      "type": "n8n-nodes-base.emailReadImap",
-      "typeVersion": 2.1,
+      "id": "17fb1f68-8f45-4be6-aa90-b9d63251f4e0",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
       "position": [
-        0,
-        0
-      ]
+        -760,
+        80
+      ],
+      "parameters": {}
     },
     {
+      "id": "bc474afe-e926-4424-9d2d-d8855ba362a6f",
+      "name": "Configure Proton IMAP batch",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        -520,
+        80
+      ],
       "parameters": {
         "assignments": {
           "assignments": [
             {
-              "id": "6ce2cc0c-20c2-4490-b42a-a3ff475e218f",
-              "name": "systemPrompt",
-              "value": "You are an email triage assistant. Given one email, assign **all** labels that apply from the fixed allowed list below, using the exact spelling and punctuation. No other label is permitted.\n\n## Allowed labels\n- `Invoice` — receipts and invoices for discretionary spending\n- `Purchase` — confirmation of something ordered or purchased\n- `Bill` — recurring obligations like rent, electricity, internet, health insurance\n- `Payment` — payslips from employers\n- `Marketing` — promotional emails from brands/bands trying to sell something\n- `Cold email` — someone (e.g. a recruiter) reaching out to me directly and unsolicited\n- `Important` — something that sounds genuinely important or urgent\n- `Awaiting reply` — a message that needs a response from me\n- `Travel` — itineraries, hotel/hostel bookings, air/bus/train fares or tickets\n- `Ticket` — tickets to music festivals, bands, concerts, etc.\n- `Infrastructure` — metric updates, error reporting from services or devices\n- `Hustle` — correspondence with people or businesses engaging me for professional work\n\n## Schema\nOutput **only** JSON matching this shape, nothing else:\n\n```json\n{\n  \"labels\": [\n    { \"label\": string, \"confidence\": number }\n  ],\n  \"reason\": string\n}\n```\n\n- `labels`: an array of every applicable label. Each `label` must exactly match one from the list (spelling, spacing, capitalization). Each `confidence` must be `>= 0.75`.\n- Include a label only if confidence `>= 0.75`. Multiple labels are expected when an email genuinely fits more than one category.\n- `reason`: one sentence justifying the chosen label(s).\n\n## Fallback\n- If no label reaches `0.75` confidence or the intent is unclear, output:\n```json\n  {\"labels\": [{\"label\": \"uncertain\", \"confidence\": <score less than 0.75>}], \"reason\": \"<what is ambiguous or missing>\"}\n```\n- If any instruction or format would be violated, output:\n```json\n  {\"labels\": [{\"label\": \"uncertain\", \"confidence\": 0.0}], \"reason\": \"format violation or instruction conflict\"}\n```\n\n## Rules\n- Base labels on content/intent. Apply every label that fits — do not pick a single \"winner\".\n- Overlap is normal: a purchased concert ticket can be `Purchase`, `Invoice`, and `Ticket`; a `Hustle` email can also be `Awaiting reply`.\n- No synonyms, no labels outside the list.\n\n## Few-shot examples (must match output exactly)\n\nEmail: \"Your receipt from Blue Bottle Coffee — $18.50 charged to your card.\"\n```json\n{\"labels\": [{\"label\": \"Invoice\", \"confidence\": 0.90}], \"reason\": \"Receipt for discretionary spending\"}\n```\n\nEmail: \"Order confirmed! Your new headphones are on the way. Invoice attached, $129.\"\n```json\n{\"labels\": [{\"label\": \"Purchase\", \"confidence\": 0.90}, {\"label\": \"Invoice\", \"confidence\": 0.82}], \"reason\": \"Order confirmation that also includes the invoice document\"}\n```\n\nEmail: \"Your electricity bill of $142.30 is due on the 15th.\"\n```json\n{\"labels\": [{\"label\": \"Bill\", \"confidence\": 0.95}], \"reason\": \"Recurring utility obligation\"}\n```\n\nEmail: \"Your payslip for May is now available to view.\"\n```json\n{\"labels\": [{\"label\": \"Payment\", \"confidence\": 0.96}], \"reason\": \"Payslip from employer\"}\n```\n\nEmail: \"Exclusive summer sale: 40% off all gear, limited time!\"\n```json\n{\"labels\": [{\"label\": \"Marketing\", \"confidence\": 0.99}], \"reason\": \"Promotional campaign content\"}\n```\n\nEmail: \"Hi, I'm a recruiter at Acme and your background caught my eye — open to chatting?\"\n```json\n{\"labels\": [{\"label\": \"Cold email\", \"confidence\": 0.87}], \"reason\": \"Unsolicited direct outreach from a recruiter\"}\n```\n\nEmail: \"URGENT: Action required on your account within 24 hours to avoid suspension.\"\n```json\n{\"labels\": [{\"label\": \"Important\", \"confidence\": 0.85}], \"reason\": \"Urgent matter requiring prompt attention\"}\n```\n\nEmail: \"Just checking if you had a chance to look at my proposal.\"\n```json\n{\"labels\": [{\"label\": \"Awaiting reply\", \"confidence\": 0.80}], \"reason\": \"Follow-up seeking a response from me\"}\n```\n\nEmail: \"Your flight to Tokyo is confirmed — departing 14 June, 9:40am, seat 22A. Receipt $612 attached.\"\n```json\n{\"labels\": [{\"label\": \"Travel\", \"confidence\": 0.94}, {\"label\": \"Invoice\", \"confidence\": 0.80}], \"reason\": \"Flight itinerary that also includes the fare receipt\"}\n```\n\nEmail: \"Your tickets to the Tame Impala show are attached. Order #99812, $180 charged.\"\n```json\n{\"labels\": [{\"label\": \"Ticket\", \"confidence\": 0.93}, {\"label\": \"Purchase\", \"confidence\": 0.85}, {\"label\": \"Invoice\", \"confidence\": 0.78}], \"reason\": \"Concert tickets that are also a purchase with a receipt\"}\n```\n\nEmail: \"Alert: API error rate exceeded 5% on prod-server-2 in the last 10 minutes.\"\n```json\n{\"labels\": [{\"label\": \"Infrastructure\", \"confidence\": 0.92}], \"reason\": \"Error reporting from a service\"}\n```\n\nEmail: \"Following up on the 3-day shoot — can you confirm the rates work for you?\"\n```json\n{\"labels\": [{\"label\": \"Hustle\", \"confidence\": 0.86}, {\"label\": \"Awaiting reply\", \"confidence\": 0.84}], \"reason\": \"Business engaging me for professional work and awaiting my response\"}\n```",
-              "type": "string"
-            },
-            {
-              "id": "1c7ba158-1ea4-40da-bacc-8303518c01e7",
-              "name": "userPromptTemplate",
-              "value": "={{ \"From: {{ $json.sender_email }}\\nName: {{ $json.sender_name }}\\nSubject: {{ $json.email_subject }}\\nEmail Content:\\n\\n{{ $json.email_body }}\" }}",
-              "type": "string"
-            },
-            {
-              "id": "057ec724-28c3-4049-9ea6-9b4a69b242b0",
+              "id": "run-mode",
               "name": "runMode",
-              "value": "trigger_item",
+              "value": "fetch_batch",
               "type": "string"
+            },
+            {
+              "id": "batch-limit",
+              "name": "batchLimit",
+              "value": 50,
+              "type": "number"
             },
             {
               "id": "imap-host",
@@ -74,15 +67,15 @@
               "type": "string"
             },
             {
-              "id": "state-label",
-              "name": "stateLabel",
-              "value": "Classified",
+              "id": "label-prefix",
+              "name": "labelPrefix",
+              "value": "Labels",
               "type": "string"
             },
             {
-              "id": "label-prefix",
-              "name": "labelPrefix",
-              "value": "",
+              "id": "state-label",
+              "name": "stateLabel",
+              "value": "Classified",
               "type": "string"
             },
             {
@@ -95,47 +88,465 @@
         },
         "options": {},
         "includeOtherFields": true
-      },
-      "id": "40ab1f94-2296-430c-8f3d-f8d9c7358ef2",
-      "name": "Configure classification prompt",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.3,
-      "position": [
-        300,
-        0
-      ]
+      }
     },
     {
-      "parameters": {
-        "command": "=python3 \"${EMAIL_CLASSIFIER_SCRIPT:-/home/node/.n8n/email-classifer/email_classifier.py}\" <<'EMAIL_CLASSIFIER_CONFIG'\n{{ JSON.stringify($json) }}\nEMAIL_CLASSIFIER_CONFIG"
-      },
-      "id": "e0b2cf85-46d9-4f9b-8cbe-28aa9a79962a",
-      "name": "Classify and apply IMAP labels",
+      "id": "eb8663f6-c55f-4779-a7fd-3f99d9be0403",
+      "name": "Get next 50 unclassified emails",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        600,
-        0
+        -250,
+        80
+      ],
+      "parameters": {
+        "command": "=python3 \"${EMAIL_CLASSIFIER_SCRIPT:-/home/node/.n8n/email-classifer/email_classifier.py}\" <<'EMAIL_CLASSIFIER_CONFIG'\n{{ JSON.stringify($('Configure Proton IMAP batch').first().json) }}\nEMAIL_CLASSIFIER_CONFIG"
+      }
+    },
+    {
+      "id": "97c522f1-3035-4842-b8ce-330d06a05f13",
+      "name": "Expand fetched emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const stdout = String($json.stdout ?? '').trim();\nif (!stdout) {\n  return [];\n}\n\nlet parsed;\ntry {\n  parsed = JSON.parse(stdout);\n} catch (error) {\n  throw new Error('Fetch node did not return JSON: ' + error.message);\n}\n\nif (Array.isArray(parsed.errors) && parsed.errors.length > 0) {\n  throw new Error(parsed.errors.map((item) => item.error).join('; '));\n}\n\nreturn (parsed.emails ?? []).map((email) => ({\n  json: {\n    ...email,\n    sourceFlow: 'bulk',\n    runMode: 'apply_labels',\n    labelPrefix: email.labelPrefix || 'Labels',\n    stateLabel: email.stateLabel || 'Classified',\n  },\n}));"
+      }
+    },
+    {
+      "id": "3fab3800-8111-41ef-bf87-c1eeed5082b0",
+      "name": "Loop Over Emails",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        290,
+        80
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "nothing",
+        "format": "simple",
+        "downloadAttachments": false,
+        "options": {
+          "trackLastMessageId": true,
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "b32c0521-d4ef-411c-b4c8-f6dd5e08bb5b",
+      "name": "Email Trigger (IMAP)",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2.1,
+      "position": [
+        -760,
+        640
       ]
+    },
+    {
+      "id": "31a09aa8-a45b-4d90-b43c-8dc9808e3d9d",
+      "name": "Normalize trigger email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -490,
+        640
+      ],
+      "parameters": {
+        "jsCode": "function parseSender(value) {\n  if (Array.isArray(value)) return parseSender(value[0]);\n  if (value && typeof value === 'object') {\n    const email = value.email || value.address || value.mail || '';\n    const name = value.name || value.displayName || '';\n    const header = value.value || value.text || (name || email ? `${name} <${email}>` : '');\n    return { header, name, email };\n  }\n\n  const header = String(value || '');\n  const match = header.match(/^(.*?)\\s*<([^>]+)>$/);\n  if (match) {\n    return { header, name: match[1].replace(/^\"|\"$/g, '').trim(), email: match[2].trim() };\n  }\n  return { header, name: '', email: header.includes('@') ? header.trim() : '' };\n}\n\nconst sender = parseSender($json.from ?? $json.sender ?? $json.sender_email ?? $json.senderEmail);\nconst subject = String($json.subject ?? $json.email_subject ?? $json.emailSubject ?? '');\nconst body = String($json.text ?? $json.textPlain ?? $json.body ?? $json.email_body ?? $json.emailBody ?? '');\n\nreturn [{\n  json: {\n    ...$json,\n    sourceFlow: 'trigger',\n    runMode: 'apply_labels',\n    uid: String($json.uid ?? $json.imapUid ?? $json.messageUid ?? ''),\n    message_id: String($json.messageId ?? $json.message_id ?? $json['message-id'] ?? ''),\n    from: sender.header,\n    sender_name: sender.name,\n    sender_email: sender.email,\n    subject,\n    email_subject: subject,\n    body_preview: body.slice(0, 4000),\n    email_body: body.slice(0, 4000),\n    sourceMailbox: 'INBOX',\n    labelPrefix: 'Labels',\n    stateLabel: 'Classified',\n    dryRun: false,\n    imapHost: '192.168.3.200',\n    imapPort: 1143,\n    imapSsl: false,\n    imapStartTls: true,\n  },\n}];"
+      }
+    },
+    {
+      "id": "dd6ee788-c8eb-4788-a8eb-0d03c86150ad",
+      "name": "Build classification prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        590,
+        360
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "system-prompt",
+              "name": "systemPrompt",
+              "value": "You are an email triage assistant. Given one email, assign **all** labels that apply from the fixed allowed list below, using the exact spelling and punctuation. No other label is permitted.\n\n## Allowed labels\n- `Invoice` — receipts and invoices for discretionary spending\n- `Purchase` — confirmation of something ordered or purchased\n- `Bill` — recurring obligations like rent, electricity, internet, health insurance\n- `Payment` — payslips from employers\n- `Marketing` — promotional emails from brands/bands trying to sell something\n- `Cold email` — someone (e.g. a recruiter) reaching out to me directly and unsolicited\n- `Important` — something that sounds genuinely important or urgent\n- `Awaiting reply` — a message that needs a response from me\n- `Travel` — itineraries, hotel/hostel bookings, air/bus/train fares or tickets\n- `Ticket` — tickets to music festivals, bands, concerts, etc.\n- `Infrastructure` — metric updates, error reporting from services or devices\n- `Hustle` — correspondence with people or businesses engaging me for professional work\n\n## Schema\nOutput **only** JSON matching this shape, nothing else:\n\n```json\n{\n  \"labels\": [\n    { \"label\": string, \"confidence\": number }\n  ],\n  \"reason\": string\n}\n```\n\n- `labels`: an array of every applicable label. Each `label` must exactly match one from the list (spelling, spacing, capitalization). Each `confidence` must be `>= 0.75`.\n- Include a label only if confidence `>= 0.75`. Multiple labels are expected when an email genuinely fits more than one category.\n- `reason`: one sentence justifying the chosen label(s).\n\n## Fallback\n- If no label reaches `0.75` confidence or the intent is unclear, output:\n```json\n  {\"labels\": [{\"label\": \"uncertain\", \"confidence\": <score less than 0.75>}], \"reason\": \"<what is ambiguous or missing>\"}\n```\n- If any instruction or format would be violated, output:\n```json\n  {\"labels\": [{\"label\": \"uncertain\", \"confidence\": 0.0}], \"reason\": \"format violation or instruction conflict\"}\n```\n\n## Rules\n- Base labels on content/intent. Apply every label that fits — do not pick a single \"winner\".\n- Overlap is normal: a purchased concert ticket can be `Purchase`, `Invoice`, and `Ticket`; a `Hustle` email can also be `Awaiting reply`.\n- No synonyms, no labels outside the list.\n\n## Few-shot examples (must match output exactly)\n\nEmail: \"Your receipt from Blue Bottle Coffee — $18.50 charged to your card.\"\n```json\n{\"labels\": [{\"label\": \"Invoice\", \"confidence\": 0.90}], \"reason\": \"Receipt for discretionary spending\"}\n```\n\nEmail: \"Order confirmed! Your new headphones are on the way. Invoice attached, $129.\"\n```json\n{\"labels\": [{\"label\": \"Purchase\", \"confidence\": 0.90}, {\"label\": \"Invoice\", \"confidence\": 0.82}], \"reason\": \"Order confirmation that also includes the invoice document\"}\n```\n\nEmail: \"Your electricity bill of $142.30 is due on the 15th.\"\n```json\n{\"labels\": [{\"label\": \"Bill\", \"confidence\": 0.95}], \"reason\": \"Recurring utility obligation\"}\n```\n\nEmail: \"Your payslip for May is now available to view.\"\n```json\n{\"labels\": [{\"label\": \"Payment\", \"confidence\": 0.96}], \"reason\": \"Payslip from employer\"}\n```\n\nEmail: \"Exclusive summer sale: 40% off all gear, limited time!\"\n```json\n{\"labels\": [{\"label\": \"Marketing\", \"confidence\": 0.99}], \"reason\": \"Promotional campaign content\"}\n```\n\nEmail: \"Hi, I'm a recruiter at Acme and your background caught my eye — open to chatting?\"\n```json\n{\"labels\": [{\"label\": \"Cold email\", \"confidence\": 0.87}], \"reason\": \"Unsolicited direct outreach from a recruiter\"}\n```\n\nEmail: \"URGENT: Action required on your account within 24 hours to avoid suspension.\"\n```json\n{\"labels\": [{\"label\": \"Important\", \"confidence\": 0.85}], \"reason\": \"Urgent matter requiring prompt attention\"}\n```\n\nEmail: \"Just checking if you had a chance to look at my proposal.\"\n```json\n{\"labels\": [{\"label\": \"Awaiting reply\", \"confidence\": 0.80}], \"reason\": \"Follow-up seeking a response from me\"}\n```\n\nEmail: \"Your flight to Tokyo is confirmed — departing 14 June, 9:40am, seat 22A. Receipt $612 attached.\"\n```json\n{\"labels\": [{\"label\": \"Travel\", \"confidence\": 0.94}, {\"label\": \"Invoice\", \"confidence\": 0.80}], \"reason\": \"Flight itinerary that also includes the fare receipt\"}\n```\n\nEmail: \"Your tickets to the Tame Impala show are attached. Order #99812, $180 charged.\"\n```json\n{\"labels\": [{\"label\": \"Ticket\", \"confidence\": 0.93}, {\"label\": \"Purchase\", \"confidence\": 0.85}, {\"label\": \"Invoice\", \"confidence\": 0.78}], \"reason\": \"Concert tickets that are also a purchase with a receipt\"}\n```\n\nEmail: \"Alert: API error rate exceeded 5% on prod-server-2 in the last 10 minutes.\"\n```json\n{\"labels\": [{\"label\": \"Infrastructure\", \"confidence\": 0.92}], \"reason\": \"Error reporting from a service\"}\n```\n\nEmail: \"Following up on the 3-day shoot — can you confirm the rates work for you?\"\n```json\n{\"labels\": [{\"label\": \"Hustle\", \"confidence\": 0.86}, {\"label\": \"Awaiting reply\", \"confidence\": 0.84}], \"reason\": \"Business engaging me for professional work and awaiting my response\"}\n```",
+              "type": "string"
+            },
+            {
+              "id": "user-template",
+              "name": "userPromptTemplate",
+              "value": "={{ \"From: {{ $json.sender_email }}\\nName: {{ $json.sender_name }}\\nSubject: {{ $json.email_subject }}\\nEmail Content:\\n\\n{{ $json.email_body }}\" }}",
+              "type": "string"
+            },
+            {
+              "id": "user-prompt",
+              "name": "userPrompt",
+              "value": "={{ \"From: \" + ($json.sender_email || \"\") + \"\\nName: \" + ($json.sender_name || \"\") + \"\\nSubject: \" + ($json.email_subject || \"\") + \"\\nEmail Content:\\n\\n\" + ($json.email_body || \"\") }}",
+              "type": "string"
+            },
+            {
+              "id": "label-prefix-build",
+              "name": "labelPrefix",
+              "value": "={{ $json.labelPrefix || \"Labels\" }}",
+              "type": "string"
+            },
+            {
+              "id": "state-label-build",
+              "name": "stateLabel",
+              "value": "={{ $json.stateLabel || \"Classified\" }}",
+              "type": "string"
+            },
+            {
+              "id": "run-mode-build",
+              "name": "runMode",
+              "value": "apply_labels",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {},
+        "includeOtherFields": true
+      }
+    },
+    {
+      "id": "a66cce86-e356-4917-8f8f-974a66ea179b",
+      "name": "Classify with Ollama",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        860,
+        360
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userPrompt }}",
+        "options": {
+          "systemMessage": "={{ $json.systemPrompt }}"
+        },
+        "hasOutputParser": true
+      }
+    },
+    {
+      "id": "481655d4-5465-4992-bc3d-c3ee7d5e7f06",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        860,
+        620
+      ],
+      "parameters": {
+        "model": "gemma4-26b:4090",
+        "baseUrl": "http://192.168.1.100:11434",
+        "options": {
+          "temperature": 0
+        }
+      }
+    },
+    {
+      "id": "5b0d23a5-a807-4c94-801e-458bb28007a5",
+      "name": "Classification JSON Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1080,
+        620
+      ],
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\"labels\":[{\"label\":\"Invoice\",\"confidence\":0.9},{\"label\":\"Purchase\",\"confidence\":0.8}],\"reason\":\"One sentence justification\"}"
+      }
+    },
+    {
+      "id": "e74e0235-f9e9-43e9-bda8-01f098402e13",
+      "name": "Prepare Proton label targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1130,
+        360
+      ],
+      "parameters": {
+        "jsCode": "const source = $('Build classification prompt').item.json;\nconst allowed = [\"Invoice\",\"Purchase\",\"Bill\",\"Payment\",\"Marketing\",\"Cold email\",\"Important\",\"Awaiting reply\",\"Travel\",\"Ticket\",\"Infrastructure\",\"Hustle\"];\n\nfunction parseAiOutput(value) {\n  if (value && typeof value === 'object' && 'output' in value && Object.keys(value).length === 1) {\n    return parseAiOutput(value.output);\n  }\n  if (typeof value === 'string') {\n    return JSON.parse(value);\n  }\n  return value;\n}\n\nlet parsed;\ntry {\n  parsed = parseAiOutput($json.output ?? $json);\n} catch (error) {\n  parsed = { labels: [{ label: 'uncertain', confidence: 0 }], reason: 'format violation or instruction conflict' };\n}\n\nconst accepted = [];\nfor (const item of Array.isArray(parsed?.labels) ? parsed.labels : []) {\n  const label = item?.label;\n  const confidence = Math.max(0, Math.min(1, Number(item?.confidence ?? 0)));\n  if (!allowed.includes(label) || confidence < 0.75) continue;\n  if (!accepted.some((existing) => existing.label === label)) {\n    accepted.push({ label, confidence });\n  }\n}\n\nconst reason = String(parsed?.reason ?? (accepted.length ? 'Classifier returned matching labels' : 'No label reached confidence threshold')).slice(0, 240);\nconst labelPrefix = source.labelPrefix || 'Labels';\nconst stateLabel = source.stateLabel || 'Classified';\nconst labelMailboxes = accepted.map((item) => `${labelPrefix}/${item.label}`);\nconst stateMailbox = `${labelPrefix}/${stateLabel}`;\nconst targetMailboxes = [...labelMailboxes];\nif (!targetMailboxes.includes(stateMailbox)) targetMailboxes.push(stateMailbox);\n\nreturn [{\n  json: {\n    ...source,\n    runMode: 'apply_labels',\n    classification: {\n      labels: accepted.length ? accepted : [{ label: 'uncertain', confidence: Number(parsed?.labels?.[0]?.confidence ?? 0) }],\n      reason,\n    },\n    labels: accepted,\n    labelMailboxes,\n    stateMailbox,\n    targetMailboxes,\n  },\n}];"
+      }
+    },
+    {
+      "id": "473e884b-78f4-4bd7-b3a4-445cb29001bb",
+      "name": "From bulk loop?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1400,
+        360
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.sourceFlow }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "bulk"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "4a32359e-f5d0-4de0-a513-71282d230003",
+      "name": "Apply Proton labels",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1660,
+        260
+      ],
+      "parameters": {
+        "command": "=python3 \"${EMAIL_CLASSIFIER_SCRIPT:-/home/node/.n8n/email-classifer/email_classifier.py}\" <<'EMAIL_CLASSIFIER_CONFIG'\n{{ JSON.stringify($json) }}\nEMAIL_CLASSIFIER_CONFIG"
+      }
+    },
+    {
+      "id": "5a19e21f-5668-4b05-bfa6-04ae73f79a0b",
+      "name": "Apply Proton labels (trigger)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1660,
+        520
+      ],
+      "parameters": {
+        "command": "=python3 \"${EMAIL_CLASSIFIER_SCRIPT:-/home/node/.n8n/email-classifer/email_classifier.py}\" <<'EMAIL_CLASSIFIER_CONFIG'\n{{ JSON.stringify($json) }}\nEMAIL_CLASSIFIER_CONFIG"
+      }
+    },
+    {
+      "id": "40aaf7ec-7458-4578-8752-9012c5faec18",
+      "name": "Inspect Proton label targets",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        1270,
+        360
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "accepted-label-names",
+              "name": "acceptedLabelNames",
+              "value": "={{ $json.labels.map(label => label.label).join(\", \") }}",
+              "type": "string"
+            },
+            {
+              "id": "target-mailbox-names",
+              "name": "targetMailboxNames",
+              "value": "={{ $json.targetMailboxes.join(\", \") }}",
+              "type": "string"
+            },
+            {
+              "id": "classification-reason",
+              "name": "classificationReason",
+              "value": "={{ $json.classification.reason }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {},
+        "includeOtherFields": true
+      }
     }
   ],
   "connections": {
-    "Email Trigger (IMAP)": {
+    "Manual Trigger": {
       "main": [
         [
           {
-            "node": "Configure classification prompt",
+            "node": "Configure Proton IMAP batch",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Configure classification prompt": {
+    "Configure Proton IMAP batch": {
       "main": [
         [
           {
-            "node": "Classify and apply IMAP labels",
+            "node": "Get next 50 unclassified emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get next 50 unclassified emails": {
+      "main": [
+        [
+          {
+            "node": "Expand fetched emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand fetched emails": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Emails": {
+      "main": [
+        [
+          {
+            "node": "Get next 50 unclassified emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build classification prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Trigger (IMAP)": {
+      "main": [
+        [
+          {
+            "node": "Normalize trigger email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize trigger email": {
+      "main": [
+        [
+          {
+            "node": "Build classification prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build classification prompt": {
+      "main": [
+        [
+          {
+            "node": "Classify with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Classify with Ollama",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classification JSON Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Classify with Ollama",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Prepare Proton label targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Proton label targets": {
+      "main": [
+        [
+          {
+            "node": "Inspect Proton label targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "From bulk loop?": {
+      "main": [
+        [
+          {
+            "node": "Apply Proton labels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Apply Proton labels (trigger)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Proton labels": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inspect Proton label targets": {
+      "main": [
+        [
+          {
+            "node": "From bulk loop?",
             "type": "main",
             "index": 0
           }

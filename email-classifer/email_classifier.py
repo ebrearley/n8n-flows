@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""IMAP email organizer for n8n Execute Command.
+"""IMAP email organizer helpers for n8n.
 
-Reads IMAP messages, asks a local Ollama model to classify each one, and applies
-matching labels plus a state label through IMAP. It does not create labels or
+Fetches candidate IMAP messages for n8n to classify and applies already
+computed labels plus a state label through IMAP. It does not create labels or
 move/delete source messages. Defaults to dry-run mode.
 """
 
@@ -18,6 +18,9 @@ import ssl
 import sys
 import urllib.error
 import urllib.request
+from email import policy
+from email.message import EmailMessage, Message
+from email.parser import BytesParser
 from email.utils import parseaddr
 from typing import Any
 
@@ -231,12 +234,17 @@ def classification_destinations(
     state_label: str,
     prefix: str = "",
 ) -> list[str]:
+    label_names = [
+        label
+        for label in list(classification.get("folders") or [classification.get("folder")])
+        if label and label != "uncertain"
+    ]
     destinations = destination_mailboxes(
-        list(classification.get("folders") or [classification["folder"]]),
+        label_names,
         prefix,
     )
     if state_label:
-        state_destination = destination_mailbox(state_label)
+        state_destination = destination_mailbox(state_label, prefix)
         if state_destination not in destinations:
             destinations.append(state_destination)
     return destinations
@@ -387,6 +395,37 @@ def normalize_classification(content: str, categories: list[str]) -> dict[str, A
     }
 
 
+def classification_from_runtime(config: dict[str, Any], categories: list[str]) -> dict[str, Any]:
+    candidates = [
+        config.get("classification"),
+        config.get("classified"),
+        config.get("output"),
+        config.get("response"),
+    ]
+
+    if "labels" in config:
+        candidates.insert(0, {
+            "labels": config.get("labels"),
+            "reason": config.get("reason", ""),
+        })
+
+    for candidate in candidates:
+        if candidate is None or candidate == "":
+            continue
+        if isinstance(candidate, str):
+            return normalize_classification(candidate, categories)
+        if isinstance(candidate, dict):
+            if "output" in candidate and len(candidate) == 1:
+                nested = candidate.get("output")
+                if isinstance(nested, str):
+                    return normalize_classification(nested, categories)
+                if isinstance(nested, dict):
+                    return normalize_classification(json.dumps(nested), categories)
+            return normalize_classification(json.dumps(candidate), categories)
+
+    raise ValueError("n8n item did not include an AI classification result.")
+
+
 def classify_with_ollama(
     summary: dict[str, str],
     categories: list[str],
@@ -453,6 +492,12 @@ def list_mailboxes(client: imaplib.IMAP4) -> set[str]:
         if mailbox:
             mailboxes.add(mailbox)
     return mailboxes
+
+
+def select_mailbox(client: imaplib.IMAP4, mailbox: str) -> None:
+    status, data = client.select(quote_mailbox(mailbox))
+    if status != "OK":
+        raise RuntimeError(f"failed to select mailbox {mailbox!r}: {data!r}")
 
 
 def require_existing_mailbox(mailbox: str, existing: set[str], dry_run: bool) -> str:
@@ -605,11 +650,90 @@ def summary_from_trigger_item(item: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def find_uid_by_message_id(client: imaplib.IMAP4, mailbox: str, message_id: str) -> str:
-    status, data = client.select(quote_mailbox(mailbox))
-    if status != "OK":
-        raise RuntimeError(f"failed to select mailbox {mailbox!r}: {data!r}")
+def message_part_text(part: Message) -> str:
+    try:
+        content = part.get_content()
+    except Exception:
+        payload = part.get_payload(decode=True)
+        if isinstance(payload, bytes):
+            charset = part.get_content_charset() or "utf-8"
+            content = payload.decode(charset, errors="replace")
+        else:
+            content = str(payload or "")
 
+    if part.get_content_type() == "text/html":
+        return html_to_text(str(content))
+    return str(content or "").strip()
+
+
+def message_body_text(message: Message) -> str:
+    if message.is_multipart():
+        html_fallback = ""
+        for part in message.walk():
+            if part.get_content_disposition() == "attachment":
+                continue
+            content_type = part.get_content_type()
+            if content_type == "text/plain":
+                text = message_part_text(part)
+                if text:
+                    return text
+            if content_type == "text/html" and not html_fallback:
+                html_fallback = message_part_text(part)
+        return html_fallback
+
+    return message_part_text(message)
+
+
+def summary_from_raw_message(uid: bytes, raw_message: bytes) -> dict[str, str]:
+    parsed = BytesParser(policy=policy.default).parsebytes(raw_message)
+    sender_header, sender_name, sender_email = sender_parts(parsed.get("from", ""))
+    subject = str(parsed.get("subject", ""))
+    message_id = str(parsed.get("message-id", ""))
+    body = message_body_text(parsed)
+    return {
+        "uid": uid.decode("ascii", errors="replace"),
+        "message_id": message_id,
+        "from": sender_header,
+        "sender_email": sender_email,
+        "sender_name": sender_name,
+        "subject": subject,
+        "email_subject": subject,
+        "date": str(parsed.get("date", "")),
+        "body_preview": body[:4000],
+        "email_body": body[:4000],
+    }
+
+
+def search_all_uids(client: imaplib.IMAP4, mailbox: str) -> list[bytes]:
+    select_mailbox(client, mailbox)
+    status, data = client.uid("SEARCH", None, "ALL")
+    if status != "OK" or not data:
+        return []
+    return data[0].split()
+
+
+def fetch_raw_message(client: imaplib.IMAP4, uid: bytes) -> bytes:
+    status, data = client.uid("FETCH", uid.decode("ascii", errors="replace"), "(BODY.PEEK[])")
+    if status != "OK":
+        raise RuntimeError(f"failed to fetch UID {uid!r}: {data!r}")
+
+    for item in data or []:
+        if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes):
+            return item[1]
+    raise RuntimeError(f"IMAP fetch for UID {uid!r} did not return a message body")
+
+
+def message_id_exists(client: imaplib.IMAP4, mailbox: str, message_id: str) -> bool:
+    if not message_id:
+        return False
+    select_mailbox(client, mailbox)
+    escaped = '"' + message_id.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    status, data = client.uid("SEARCH", None, "HEADER", "Message-ID", escaped)
+    return status == "OK" and bool(data and data[0])
+
+
+def find_uid_by_message_id(client: imaplib.IMAP4, mailbox: str, message_id: str) -> str:
+    select_mailbox(client, mailbox)
     escaped = '"' + message_id.replace("\\", "\\\\").replace('"', '\\"') + '"'
     status, data = client.uid("SEARCH", None, "HEADER", "Message-ID", escaped)
     if status != "OK" or not data or not data[0]:
@@ -624,7 +748,6 @@ def run_trigger_item(
     prefix: str,
     categories: list[str],
     state_label: str,
-    prompt_settings: dict[str, str],
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "run_mode": "trigger_item",
@@ -657,12 +780,13 @@ def run_trigger_item(
             "date": summary["date"],
         }
 
-        classification = classify_with_ollama(summary, categories, prompt_settings)
+        classification = classification_from_runtime(runtime_config, categories)
         destinations = classification_destinations(classification, state_label, prefix)
         mailbox_actions = {
             destination: require_existing_mailbox(destination, existing, dry_run)
             for destination in destinations
         }
+        select_mailbox(client, source_mailbox)
         apply_actions = apply_message_to_destinations(client, uid, destinations, dry_run)
         item.update({
             "classification": classification,
@@ -689,6 +813,70 @@ def run_trigger_item(
     return result
 
 
+def run_fetch_batch(
+    runtime_config: dict[str, Any],
+    dry_run: bool,
+    source_mailbox: str,
+    prefix: str,
+    state_label: str,
+) -> dict[str, Any]:
+    batch_limit = runtime_int(runtime_config, "EMAIL_CLASSIFIER_BATCH_LIMIT", 50, "batchLimit", "batch_limit", "limit")
+    state_mailbox = destination_mailbox(state_label, prefix)
+    result: dict[str, Any] = {
+        "run_mode": "fetch_batch",
+        "dry_run": dry_run,
+        "source_mailbox": source_mailbox,
+        "state_mailbox": state_mailbox,
+        "limit": batch_limit,
+        "emails": [],
+        "errors": [],
+    }
+
+    client = connect_imap(runtime_config)
+    try:
+        existing = list_mailboxes(client)
+        result["mailboxes"] = sorted(existing)
+        require_existing_mailbox(state_mailbox, existing, dry_run)
+
+        uids = list(reversed(search_all_uids(client, source_mailbox)))
+        for uid in uids:
+            select_mailbox(client, source_mailbox)
+            summary = summary_from_raw_message(uid, fetch_raw_message(client, uid))
+            if message_id_exists(client, state_mailbox, summary["message_id"]):
+                continue
+
+            summary.update({
+                "runMode": "trigger_item",
+                "sourceMailbox": source_mailbox,
+                "labelPrefix": prefix,
+                "stateLabel": state_label,
+                "dryRun": dry_run,
+                "systemPrompt": runtime_config.get("systemPrompt", DEFAULT_SYSTEM_PROMPT),
+                "userPromptTemplate": runtime_config.get("userPromptTemplate", DEFAULT_USER_PROMPT_TEMPLATE),
+                "imapHost": runtime_str(runtime_config, "IMAP_HOST", "192.168.3.200", "imapHost", "imap_host"),
+                "imapPort": runtime_int(runtime_config, "IMAP_PORT", 1143, "imapPort", "imap_port"),
+                "imapSsl": runtime_bool(runtime_config, "IMAP_SSL", False, "imapSsl", "imap_ssl"),
+                "imapStartTls": runtime_bool(runtime_config, "IMAP_STARTTLS", True, "imapStartTls", "imap_starttls", "imapStartTLS"),
+            })
+            result["emails"].append(summary)
+            if len(result["emails"]) >= batch_limit:
+                break
+
+        result["stopped_reason"] = "batch_ready" if result["emails"] else "inbox_fully_classified"
+    except (OSError, TimeoutError, RuntimeError, ValueError) as exc:
+        result["errors"].append({"error": str(exc)})
+        result["stopped_reason"] = "fetch_batch_error"
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+    result["total_emails"] = len(result["emails"])
+    result["total_errors"] = len(result["errors"])
+    return result
+
+
 def run() -> dict[str, Any]:
     runtime_config = load_runtime_config()
     dry_run = runtime_bool(runtime_config, "EMAIL_CLASSIFIER_DRY_RUN", True, "dryRun", "dry_run")
@@ -702,7 +890,7 @@ def run() -> dict[str, Any]:
     prefix = runtime_str(
         runtime_config,
         "EMAIL_CLASSIFIER_LABEL_PREFIX",
-        "",
+        "Labels",
         "labelPrefix",
         "folderPrefix",
         "prefix",
@@ -718,15 +906,23 @@ def run() -> dict[str, Any]:
         os.getenv("EMAIL_CLASSIFIER_LABELS")
         or os.getenv("EMAIL_CLASSIFIER_CATEGORIES")
     )
-    prompt_settings = prompt_settings_from_config(runtime_config)
     run_mode = str(
         runtime_config.get("runMode")
         or runtime_config.get("run_mode")
         or os.getenv("EMAIL_CLASSIFIER_RUN_MODE", "trigger_item")
     ).strip()
 
-    if run_mode != "trigger_item":
-        raise RuntimeError(f"unsupported run mode {run_mode!r}; only trigger_item is supported")
+    if run_mode == "fetch_batch":
+        return run_fetch_batch(
+            runtime_config,
+            dry_run,
+            source_mailbox,
+            prefix,
+            state_label,
+        )
+
+    if run_mode not in {"trigger_item", "apply_labels"}:
+        raise RuntimeError(f"unsupported run mode {run_mode!r}; expected fetch_batch or trigger_item")
 
     return run_trigger_item(
         runtime_config,
@@ -735,7 +931,6 @@ def run() -> dict[str, Any]:
         prefix,
         categories,
         state_label,
-        prompt_settings,
     )
 
 

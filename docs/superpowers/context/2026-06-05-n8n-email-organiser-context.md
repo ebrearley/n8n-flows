@@ -6,15 +6,77 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 ## Current Revision
 
-Manual backfill has been removed. `Email Organiser` is now an inactive automated `Email Trigger (IMAP)` workflow that classifies one incoming email at a time, then applies existing labels plus `Classified` through IMAP. It must not create labels, move messages, delete source messages, or expunge the mailbox. IMAP uses STARTTLS at `192.168.3.200:1143`.
+`Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive 15-node n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, structured JSON parser, Proton label target preparation, and separate apply nodes for bulk and trigger paths.
 
-## Current Goal
+The saved n8n workflow is not active and was not executed.
 
-Build out the n8n workflow named `Email Organiser` so it can first be run manually from the n8n **Execute workflow** button, pull emails from an IMAP server in batches of 50, classify them with local Ollama, add matching labels plus `Classified`, and continue until the inbox has no more processable messages. After the manual backfill, switch to an IMAP-triggered workflow that classifies one incoming email per trigger execution.
+## Proton IMAP Target
 
-## Codex MCP Configuration
+- Host: `192.168.3.200`
+- Port: `1143`
+- TLS: STARTTLS
+- Source mailbox: `INBOX`
+- Proton labels root: `Labels`
+- State label mailbox: `Labels/Classified`
 
-The Codex n8n MCP server config was restored in `~/.codex/config.toml`:
+Proton Mail exposes UI labels as nested mailboxes under `Labels`. The workflow applies accepted labels as `Labels/<label>` and applies `Labels/Classified` to every classified email.
+
+The workflow must not create labels, create folders, move messages, delete messages, or expunge.
+
+## Workflow Shape
+
+Bulk path:
+
+```text
+Manual Trigger
+  -> Configure Proton IMAP batch
+  -> Get next 50 unclassified emails
+  -> Expand fetched emails
+  -> Loop Over Emails
+  -> Build classification prompt
+  -> Classify with Ollama
+  -> Prepare Proton label targets
+  -> From bulk loop?
+  -> Apply Proton labels
+  -> Loop Over Emails / next batch
+```
+
+Trigger path:
+
+```text
+Email Trigger (IMAP)
+  -> Normalize trigger email
+  -> Build classification prompt
+  -> Classify with Ollama
+  -> Prepare Proton label targets
+  -> From bulk loop?
+  -> Apply Proton labels (trigger)
+```
+
+## Ollama
+
+- Node: `Ollama Chat Model`
+- Agent: `Classify with Ollama`
+- Base URL: `http://192.168.1.100:11434`
+- Model: `gemma4-26b:4090`
+
+The Python helper no longer calls Ollama in apply mode. n8n performs classification through the visible AI node.
+
+## Runtime Environment
+
+The `Email Trigger (IMAP)` node uses the IMAP credential assigned in n8n.
+
+Execute Command nodes cannot access n8n credential secrets directly. For bulk fetch and label application, the n8n runtime also needs:
+
+```bash
+IMAP_USER=...
+IMAP_PASSWORD=...
+EMAIL_CLASSIFIER_SCRIPT=/home/node/.n8n/email-classifer/email_classifier.py
+```
+
+## n8n MCP
+
+Codex n8n MCP server config:
 
 ```toml
 [mcp_servers.n8n-mcp]
@@ -22,95 +84,11 @@ url = "https://n8n.home.ericbrearley.com/mcp-server/http"
 bearer_token_env_var = "N8N_MCP_ACCESS_TOKEN"
 ```
 
-No `enabled_tools` allow-list is configured, so Codex should expose all tools advertised by the n8n MCP server. The token value is intentionally not stored here.
+No `enabled_tools` allow-list is configured, so Codex should expose all tools advertised by the n8n MCP server.
 
-## n8n Workflow
+## Open Checks
 
-Workflow found via n8n MCP:
-
-- Name: `Email Organiser`
-- ID: `fm6pLPnZWsGfK1oH`
-- Active: `false`
-- Archived: `false`
-- Available in MCP: `true`
-- Can execute: `true`
-- Current nodes: one manual trigger named `When clicking 'Execute workflow'`
-- Current credentials visible through MCP: none
-
-Workflow-as-code artifacts were added under `email-classifer/`:
-
-- `workflow.json`: importable n8n workflow JSON for Manual Trigger -> Configure classification prompt -> Execute Command.
-- `workflow-imap-trigger.json`: importable n8n workflow JSON scaffold for Email Trigger (IMAP) -> Configure classification prompt -> Execute Command.
-- `email_classifier.py`: stdlib Python script run by the Execute Command node.
-- `tests/`: deterministic unit tests for local classifier helper behavior.
-- `README.md`: runtime environment and import instructions.
-
-Runtime modes:
-
-- `manual_backfill`: batch through the source mailbox 50 messages at a time until no processable messages remain.
-- `trigger_item`: classify one email item emitted by the IMAP trigger.
-
-## IMAP Target
-
-User-provided IMAP endpoint:
-
-- Host: `192.168.3.200`
-- Port: `1143`
-
-Credentials have not been provided in chat and should not be written into repo files. Proposed n8n environment variable names:
-
-- `IMAP_USER`
-- `IMAP_PASSWORD`
-
-Live IMAP folder discovery is runtime/integration behavior. Unit tests should not depend on the current live folder list from `192.168.3.200:1143`.
-
-Per user instruction, do not execute the workflow against the mailbox until the destination labels/folders have been set up in email. The user has added a state label named `Classified`; the script should add it to each successfully classified email.
-
-Do not activate the IMAP-triggered workflow until the manual backfill has completed.
-
-## Ollama Target
-
-User-provided Ollama endpoint and model:
-
-- Base URL: `http://192.168.1.100:11434`
-- Model: `gemma4-26b:4090`
-- Keep loaded: `OLLAMA_KEEP_ALIVE=-1`
-
-The classifier calls Ollama `/api/chat` with `stream=false`, `format=json`, `temperature=0`, and a conservative multi-label prompt that falls back to `uncertain`.
-
-Default labels:
-
-- `Invoice`
-- `Purchase`
-- `Bill`
-- `Payment`
-- `Marketing`
-- `Cold email`
-- `Important`
-- `Awaiting reply`
-- `Travel`
-- `Ticket`
-- `Infrastructure`
-- `Hustle`
-- `uncertain`
-
-State label:
-
-- `Classified`
-
-## Node Discovery Notes
-
-n8n MCP node search found:
-
-- `n8n-nodes-base.manualTrigger` for manual workflow execution.
-- `n8n-nodes-base.emailReadImap`, but it is an IMAP trigger node for new mail, not a general manual action node for fetching the latest 50 messages.
-- Gmail and Outlook nodes support label/folder operations, but the requested server is raw IMAP.
-
-Because a generic IMAP action node was not found, the practical design is to use an Execute Command node with a short Python `imaplib` script. That script is now represented as workflow-as-code in this repo.
-
-## Open Decisions
-
-- Confirm whether to use `IMAP_USER` and `IMAP_PASSWORD` environment variables inside n8n.
-- Confirm labels/folders have been created in email before any workflow execution.
-- Confirm whether the first workflow execution should remain dry-run.
-- Confirm n8n host queue/concurrency config is set to allow only one production execution at a time before activating the IMAP trigger.
+- Confirm the `Ollama Chat Model` credential/endpoint is valid in n8n if the UI asks for an `Ollama account`.
+- Confirm `IMAP_USER`, `IMAP_PASSWORD`, and `EMAIL_CLASSIFIER_SCRIPT` are present in the n8n runtime.
+- Confirm all Proton labels exist under `Labels`, including `Labels/Classified`.
+- Configure production queue/concurrency to `1` before activating the workflow.

@@ -132,10 +132,33 @@ class EmailClassifierTests(unittest.TestCase):
         destinations = classifier.classification_destinations(
             {"folders": ["Invoice", "Ticket"]},
             state_label="Classified",
-            prefix="AI",
+            prefix="Labels",
         )
 
-        self.assertEqual(destinations, ["AI/Invoice", "AI/Ticket", "Classified"])
+        self.assertEqual(destinations, ["Labels/Invoice", "Labels/Ticket", "Labels/Classified"])
+
+    def test_uncertain_classification_only_applies_classified_state_label(self):
+        destinations = classifier.classification_destinations(
+            {"folders": ["uncertain"], "folder": "uncertain"},
+            state_label="Classified",
+            prefix="Labels",
+        )
+
+        self.assertEqual(destinations, ["Labels/Classified"])
+
+    def test_normalizes_classification_from_runtime_ai_output(self):
+        result = classifier.classification_from_runtime(
+            {
+                "classification": {
+                    "labels": [{"label": "Invoice", "confidence": 0.91}],
+                    "reason": "Receipt for discretionary spending",
+                }
+            },
+            ["Invoice", "uncertain"],
+        )
+
+        self.assertEqual(result["folders"], ["Invoice"])
+        self.assertEqual(result["reason"], "Receipt for discretionary spending")
 
     def test_renders_custom_user_prompt_template(self):
         summary = {
@@ -208,18 +231,10 @@ class EmailClassifierTests(unittest.TestCase):
         self.assertEqual(summary["email_subject"], "Sponsor inquiry")
         self.assertEqual(summary["email_body"], "Can you send your rates?")
 
-    def test_trigger_mode_classifies_one_trigger_item(self):
+    def test_trigger_mode_applies_ai_node_classification(self):
         class FakeClient:
             def logout(self):
                 return None
-
-        classification = {
-            "labels": [{"label": "Hustle", "confidence": 0.9}],
-            "label": "Hustle",
-            "folders": ["Hustle"],
-            "folder": "Hustle",
-            "reason": "test",
-        }
 
         config = {
             "runMode": "trigger_item",
@@ -228,6 +243,11 @@ class EmailClassifierTests(unittest.TestCase):
             "subject": "Sponsor inquiry",
             "text": "Can you send your rates?",
             "date": "Fri, 05 Jun 2026 10:00:00 +1000",
+            "labelPrefix": "Labels",
+            "classification": {
+                "labels": [{"label": "Hustle", "confidence": 0.9}],
+                "reason": "test",
+            },
         }
 
         def apply_message(_client, _uid, destinations, _dry_run):
@@ -244,16 +264,18 @@ class EmailClassifierTests(unittest.TestCase):
         }, clear=False), \
             mock.patch.object(classifier, "load_runtime_config", return_value=config), \
             mock.patch.object(classifier, "connect_imap", return_value=FakeClient()), \
-            mock.patch.object(classifier, "list_mailboxes", return_value={"Hustle", "Classified"}), \
-            mock.patch.object(classifier, "classify_with_ollama", return_value=classification), \
+            mock.patch.object(classifier, "select_mailbox", return_value=None), \
+            mock.patch.object(classifier, "list_mailboxes", return_value={"Labels/Hustle", "Labels/Classified"}), \
+            mock.patch.object(classifier, "classify_with_ollama") as classify_with_ollama, \
             mock.patch.object(classifier, "require_existing_mailbox", return_value="exists"), \
             mock.patch.object(classifier, "apply_message_to_destinations", side_effect=apply_message):
             result = classifier.run()
 
+        classify_with_ollama.assert_not_called()
         self.assertEqual(result["run_mode"], "trigger_item")
         self.assertEqual(result["total_processed"], 1)
         self.assertEqual(result["processed"][0]["uid"], "42")
-        self.assertEqual(result["processed"][0]["destinations"], ["Hustle", "Classified"])
+        self.assertEqual(result["processed"][0]["destinations"], ["Labels/Hustle", "Labels/Classified"])
 
 
 if __name__ == "__main__":
