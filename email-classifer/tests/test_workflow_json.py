@@ -114,6 +114,13 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("recipient_email", trigger_code)
         self.assertIn("...item", apply_code)
 
+    def test_fetch_checks_classified_state_with_headers_before_fetching_body(self):
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        self.assertIn("fetchHeaders", code)
+        self.assertIn("BODY.PEEK[HEADER]", code)
+        self.assertLess(code.index("fetchHeaders(uid"), code.index("fetchRaw(uid"))
+
     def test_tls_servername_is_not_set_for_ip_hosts(self):
         nodes = self.nodes_by_name()
 
@@ -168,7 +175,7 @@ const source = {
   stateLabel: 'Classified',
 };
 const aiOutput = {
-  output: '```json\n{\n  "labels": [\n    {\n      "label": "uncertain",\n      "confidence": 0.5\n    }\n  ],\n  "reason": "The email is an appointment confirmation, which does not clearly fit into the specific categories provided."\n}\n```',
+  output: '```json\n{\n  "labels": [\n    {\n      "label": "uncertain",\n      "confidence": 0.0\n    }\n  ],\n  "reason": "The email is an appointment confirmation, but it does not clearly fit into the specific categories provided."\n}\n```',
 };
 const dollar = (name) => {
   if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
@@ -194,7 +201,7 @@ const dollar = (name) => {
 
         self.assertEqual(
             result["classification"]["labels"],
-            [{"label": "uncertain", "confidence": 0.5}],
+            [{"label": "uncertain", "confidence": 0}],
         )
         self.assertEqual(result["labels"], [])
         self.assertEqual(result["labelMailboxes"], [])

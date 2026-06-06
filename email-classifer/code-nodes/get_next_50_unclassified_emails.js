@@ -158,6 +158,12 @@ class ImapClient {
     return parseSearchResponse(response);
   }
 
+  async fetchHeaders(uid, mailbox) {
+    await this.select(mailbox);
+    const response = await this.command(`UID FETCH ${uid} (BODY.PEEK[HEADER])`, 120000);
+    return firstLiteral(response);
+  }
+
   async fetchRaw(uid, mailbox) {
     await this.select(mailbox);
     const response = await this.command(`UID FETCH ${uid} (BODY.PEEK[])`, 120000);
@@ -562,12 +568,15 @@ for (const pair of credentialPairs) {
       const mailboxConfig = { ...pair, sourceMailbox, dryRun: defaults.dryRun };
       const uids = (await client.searchAll(sourceMailbox)).reverse();
       for (const uid of uids) {
-        const raw = await client.fetchRaw(uid, sourceMailbox);
-        const summary = summaryFromRaw(uid, raw, mailboxConfig);
-        if (stateMailboxExists && summary.message_id) {
-          const matches = await client.searchMessageId(stateMailbox, summary.message_id);
+        const rawHeaders = await client.fetchHeaders(uid, sourceMailbox);
+        const headers = parseHeaders(rawHeaders);
+        const messageId = headers['message-id'] || '';
+        if (stateMailboxExists && messageId) {
+          const matches = await client.searchMessageId(stateMailbox, messageId);
           if (matches.length > 0) continue;
         }
+        const raw = await client.fetchRaw(uid, sourceMailbox);
+        const summary = summaryFromRaw(uid, raw, mailboxConfig);
         emails.push(summary);
         if (emails.length >= defaults.batchLimit) break;
       }
