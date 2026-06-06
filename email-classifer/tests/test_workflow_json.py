@@ -90,6 +90,16 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("pair.hostVar", code)
         self.assertIn("pair.portVar", code)
 
+    def test_apply_code_skips_all_labels_when_target_mailbox_is_missing(self):
+        nodes = self.nodes_by_name()
+
+        for name in ("Apply Proton labels", "Apply Proton labels (trigger)"):
+            code = nodes[name]["parameters"]["jsCode"]
+            self.assertIn("missingMailboxes", code)
+            self.assertIn("label_application_skipped", code)
+            self.assertIn("skipped_missing_mailbox", code)
+            self.assertNotIn("Required Proton label mailbox does not exist", code)
+
     def test_tls_servername_is_not_set_for_ip_hosts(self):
         nodes = self.nodes_by_name()
 
@@ -115,6 +125,13 @@ class WorkflowJsonTests(unittest.TestCase):
             nodes["Ollama Chat Model"]["parameters"]["model"],
             "odytrice/gemma4-26b:4090",
         )
+
+    def test_classification_retries_parser_failures(self):
+        node = self.nodes_by_name()["Classify with Ollama"]
+
+        self.assertTrue(node["retryOnFail"])
+        self.assertEqual(node["maxTries"], 3)
+        self.assertEqual(node["waitBetweenTries"], 1000)
 
 
 if __name__ == "__main__":

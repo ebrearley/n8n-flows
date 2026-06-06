@@ -286,10 +286,25 @@ try {
   await client.connect();
   await client.login(username, password);
 
+  const missingMailboxes = [];
   for (const mailbox of uniqueTargets) {
     if (!(await client.mailboxExists(mailbox))) {
-      throw new Error(`Required Proton label mailbox does not exist: ${mailbox}`);
+      missingMailboxes.push(mailbox);
     }
+  }
+
+  if (missingMailboxes.length > 0) {
+    return [{
+      json: {
+        ...item,
+        label_application_skipped: true,
+        missingMailboxes,
+        destination_actions: Object.fromEntries(
+          uniqueTargets.map((target) => [target, 'skipped_missing_mailbox']),
+        ),
+        source_action: 'kept_in_source',
+      },
+    }];
   }
 
   let uid = String(item.uid || '');
