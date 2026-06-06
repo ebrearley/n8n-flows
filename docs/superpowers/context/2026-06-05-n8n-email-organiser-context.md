@@ -6,9 +6,9 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 ## Current Revision
 
-`Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive 15-node n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, structured JSON parser, Proton label target preparation, and separate apply nodes for bulk and trigger paths.
+`Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, structured JSON parser, Proton label target preparation, and separate JavaScript Code-node apply paths for bulk and trigger processing.
 
-The saved n8n workflow is not active and was not executed.
+The saved n8n workflow is not active and is not published. Manual execution now reaches `Get next 50 unclassified emails` and is blocked on missing `IMAP_USER` / `IMAP_PASSWORD` access for the Code node.
 
 ## Proton IMAP Target
 
@@ -60,19 +60,20 @@ Email Trigger (IMAP)
 - Base URL: `http://192.168.1.100:11434`
 - Model: `gemma4-26b:4090`
 
-The Python helper no longer calls Ollama in apply mode. n8n performs classification through the visible AI node.
+The Python helper is retained only as legacy local test coverage. The current workflow performs IMAP fetch and label application inside n8n JavaScript Code nodes, and n8n performs classification through the visible AI node.
 
 ## Runtime Environment
 
 The `Email Trigger (IMAP)` node uses the IMAP credential assigned in n8n.
 
-Execute Command nodes cannot access n8n credential secrets directly. For bulk fetch and label application, the n8n runtime also needs:
+The bulk fetch and label-application Code nodes cannot read n8n credential secrets directly. They currently read the following keys from n8n variables first, then from environment variables:
 
 ```bash
 IMAP_USER=...
 IMAP_PASSWORD=...
-EMAIL_CLASSIFIER_SCRIPT=/home/node/.n8n/email-classifer/email_classifier.py
 ```
+
+If using environment variables instead of n8n variables, n8n 2 blocks Code-node environment access by default. Enabling environment access requires setting `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`, which lets Code nodes read runtime environment variables and needs explicit approval.
 
 ## n8n MCP
 
@@ -89,6 +90,6 @@ No `enabled_tools` allow-list is configured, so Codex should expose all tools ad
 ## Open Checks
 
 - Confirm the `Ollama Chat Model` credential/endpoint is valid in n8n if the UI asks for an `Ollama account`.
-- Confirm `IMAP_USER`, `IMAP_PASSWORD`, and `EMAIL_CLASSIFIER_SCRIPT` are present in the n8n runtime.
+- Provide `IMAP_USER` and `IMAP_PASSWORD` through n8n variables, or explicitly approve `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` and set them as Coolify runtime env vars.
 - Confirm all Proton labels exist under `Labels`, including `Labels/Classified`.
 - Configure production queue/concurrency to `1` before activating the workflow.

@@ -8,7 +8,8 @@ The directory name intentionally matches the requested spelling: `email-classife
 
 - `workflow.json`: importable n8n workflow JSON for the bulk and trigger workflow.
 - `workflow-imap-trigger.json`: equivalent export retained for compatibility.
-- `email_classifier.py`: IMAP helper used by Execute Command nodes.
+- `code-nodes/`: JavaScript used by the n8n Code nodes for IMAP fetch and label application.
+- `email_classifier.py`: legacy Python helper retained for unit-tested behavior references.
 - `tests/`: unit tests for classifier helper behavior.
 
 ## Runtime Shape
@@ -43,7 +44,7 @@ Email Trigger (IMAP)
 
 Classification happens in the visible n8n AI Agent node `Classify with Ollama`, backed by the `Ollama Chat Model` node using `gemma4-26b:4090` at `http://192.168.1.100:11434`.
 
-The Python helper no longer calls Ollama. It only fetches candidate IMAP emails for the bulk loop or applies labels already selected by the AI node.
+The current workflow uses n8n JavaScript Code nodes for IMAP fetch and label application. The Python helper is retained as legacy local test coverage only.
 
 ## Proton Labels
 
@@ -63,15 +64,18 @@ The workflow does not create labels, create folders, move source messages, delet
 
 The live `Email Trigger (IMAP)` node uses the credential assigned in n8n.
 
-The bulk fetch and label-application Execute Command nodes cannot read n8n credential secrets directly, so the n8n runtime also needs:
+The bulk fetch and label-application Code nodes cannot read the `Email Trigger (IMAP)` credential secrets directly, so they need IMAP credentials from one of these sources:
+
+1. n8n variables named `IMAP_USER` and `IMAP_PASSWORD`.
+2. Runtime environment variables named `IMAP_USER` and `IMAP_PASSWORD`.
+
+For environment variables, n8n 2 blocks Code-node environment access by default. Enabling that path requires:
 
 ```bash
-IMAP_USER=your-user
-IMAP_PASSWORD=your-password
-EMAIL_CLASSIFIER_SCRIPT=/home/node/.n8n/email-classifer/email_classifier.py
+N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 ```
 
-The workflow node config sets:
+The workflow node config sets these connection values:
 
 ```bash
 IMAP_HOST=192.168.3.200
