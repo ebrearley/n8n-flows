@@ -174,6 +174,15 @@ function boolValue(value, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+function numberValue(value, fallback, description) {
+  const raw = value === undefined || value === null || value === '' ? fallback : value;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${description} must be a number`);
+  }
+  return parsed;
+}
+
 function configValue(source, key, fallback) {
   const value = source[key];
   return value === undefined || value === null || value === '' ? fallback : value;
@@ -199,11 +208,20 @@ function normalizeCredentialPair(item) {
   const pair = item.credentialPair && typeof item.credentialPair === 'object'
     ? item.credentialPair
     : {};
+  const id = String(configValue(pair, 'id', item.credentialPairId || 'imap-1'));
+  const hostVar = String(configValue(pair, 'hostVar', configValue(item, 'hostVar', 'IMAP_HOST')));
+  const portVar = String(configValue(pair, 'portVar', configValue(item, 'portVar', 'IMAP_PORT')));
 
   return {
-    id: String(configValue(pair, 'id', item.credentialPairId || 'imap-1')),
-    host: String(configValue(pair, 'host', configValue(item, 'imapHost', '192.168.3.200'))),
-    port: Number(configValue(pair, 'port', configValue(item, 'imapPort', 1143))),
+    id,
+    host: String(envValue(hostVar) || configValue(pair, 'host', configValue(item, 'imapHost', '192.168.3.200'))),
+    port: numberValue(
+      envValue(portVar) || configValue(pair, 'port', configValue(item, 'imapPort', 1143)),
+      1143,
+      `Credential pair ${id} port`,
+    ),
+    hostVar,
+    portVar,
     ssl: boolValue(pair.ssl ?? pair.imapSsl, boolValue(item.imapSsl, false)),
     startTls: boolValue(pair.startTls ?? pair.imapStartTls, boolValue(item.imapStartTls, true)),
     allowUnauthorizedCerts: boolValue(
@@ -246,8 +264,8 @@ if (!username || !password) {
 }
 
 const config = {
-  host: pair.host,
-  port: pair.port,
+  host: envValue(pair.hostVar) || pair.host,
+  port: numberValue(envValue(pair.portVar) || pair.port, pair.port, `Credential pair ${pair.id} port`),
   ssl: pair.ssl,
   startTls: pair.startTls,
   allowUnauthorizedCerts: pair.allowUnauthorizedCerts,

@@ -74,6 +74,8 @@ Each credential pair names the variables that hold its username and password:
     "id": "imap-1",
     "host": "192.168.3.200",
     "port": 1143,
+    "hostVar": "IMAP_1_HOST",
+    "portVar": "IMAP_1_PORT",
     "startTls": true,
     "userVar": "IMAP_1_USER",
     "passwordVar": "IMAP_1_PASSWORD",
@@ -84,7 +86,7 @@ Each credential pair names the variables that hold its username and password:
 ]
 ```
 
-The workflow reads those variable names from n8n variables first, then from runtime environment variables. The default workflow includes placeholders for `IMAP_1_USER`, `IMAP_1_PASSWORD`, `IMAP_2_USER`, and `IMAP_2_PASSWORD`.
+The workflow reads those variable names from n8n variables first, then from runtime environment variables. The default workflow includes placeholders for `IMAP_1_HOST`, `IMAP_1_PORT`, `IMAP_1_USER`, `IMAP_1_PASSWORD`, `IMAP_2_HOST`, `IMAP_2_PORT`, `IMAP_2_USER`, and `IMAP_2_PASSWORD`.
 
 For environment variables, n8n 2 blocks Code-node environment access by default. Enabling that path requires:
 

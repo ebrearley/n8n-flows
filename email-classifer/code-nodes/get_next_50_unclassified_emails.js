@@ -333,6 +333,15 @@ function boolValue(value, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+function numberValue(value, fallback, description) {
+  const raw = value === undefined || value === null || value === '' ? fallback : value;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${description} must be a number`);
+  }
+  return parsed;
+}
+
 function envValue(name) {
   try {
     if (typeof $vars !== 'undefined' && $vars?.[name]) return $vars[name];
@@ -368,7 +377,7 @@ function parseCredentialPairs(value) {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string' && value.trim()) {
     const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) throw new Error('credentialPairsJson must contain a JSON array');
+    if (!Array.isArray(parsed)) throw new Error('imapPairsJson must contain a JSON array');
     return parsed;
   }
   return [];
@@ -376,19 +385,30 @@ function parseCredentialPairs(value) {
 
 function normalizeCredentialPair(rawPair, index, defaults) {
   const pair = rawPair && typeof rawPair === 'object' ? rawPair : {};
+  const id = String(configValue(pair, 'id', `imap-${index + 1}`));
+  const hostVar = String(configValue(pair, 'hostVar', defaults.hostVar));
+  const portVar = String(configValue(pair, 'portVar', defaults.portVar));
+  const host = String(envValue(hostVar) || configValue(pair, 'host', defaults.host));
+  const port = numberValue(
+    envValue(portVar) || configValue(pair, 'port', defaults.port),
+    defaults.port,
+    `Credential pair ${id} port`,
+  );
   const sourceMailboxes = listValue(
     pair.sourceMailboxes ?? pair.sourceMailbox,
     [defaults.sourceMailbox],
   );
 
   if (sourceMailboxes.length === 0) {
-    throw new Error(`Credential pair ${pair.id || index + 1} must include at least one source mailbox`);
+    throw new Error(`Credential pair ${id} must include at least one source mailbox`);
   }
 
   return {
-    id: String(configValue(pair, 'id', `imap-${index + 1}`)),
-    host: String(configValue(pair, 'host', defaults.host)),
-    port: Number(configValue(pair, 'port', defaults.port)),
+    id,
+    host,
+    port,
+    hostVar,
+    portVar,
     ssl: boolValue(pair.ssl ?? pair.imapSsl, defaults.ssl),
     startTls: boolValue(pair.startTls ?? pair.imapStartTls, defaults.startTls),
     allowUnauthorizedCerts: boolValue(
@@ -415,6 +435,8 @@ function credentialPairsFromConfig(inputConfig, defaults) {
         id: 'imap-1',
         host: defaults.host,
         port: defaults.port,
+        hostVar: defaults.hostVar,
+        portVar: defaults.portVar,
         ssl: defaults.ssl,
         startTls: defaults.startTls,
         allowUnauthorizedCerts: defaults.allowUnauthorizedCerts,
@@ -433,6 +455,8 @@ function publicCredentialPair(pair) {
     id: pair.id,
     host: pair.host,
     port: pair.port,
+    hostVar: pair.hostVar,
+    portVar: pair.portVar,
     ssl: pair.ssl,
     startTls: pair.startTls,
     allowUnauthorizedCerts: pair.allowUnauthorizedCerts,
@@ -454,7 +478,9 @@ try {
 const runIndex = typeof $runIndex === 'number' ? $runIndex : 0;
 const defaults = {
   host: String(configValue(inputConfig, 'imapHost', '192.168.3.200')),
-  port: Number(configValue(inputConfig, 'imapPort', 1143)),
+  port: numberValue(configValue(inputConfig, 'imapPort', 1143), 1143, 'Default IMAP port'),
+  hostVar: String(configValue(inputConfig, 'imapHostVar', 'IMAP_HOST')),
+  portVar: String(configValue(inputConfig, 'imapPortVar', 'IMAP_PORT')),
   ssl: boolValue(inputConfig.imapSsl, false),
   startTls: boolValue(inputConfig.imapStartTls, true),
   allowUnauthorizedCerts: boolValue(inputConfig.allowUnauthorizedCerts, true),

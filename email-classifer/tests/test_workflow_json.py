@@ -51,7 +51,17 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertGreaterEqual(len(pairs), 1)
 
         first_pair = pairs[0]
-        for key in ("id", "host", "port", "startTls", "userVar", "passwordVar", "sourceMailboxes"):
+        for key in (
+            "id",
+            "host",
+            "port",
+            "hostVar",
+            "portVar",
+            "startTls",
+            "userVar",
+            "passwordVar",
+            "sourceMailboxes",
+        ):
             self.assertIn(key, first_pair)
         self.assertIsInstance(first_pair["sourceMailboxes"], list)
 
@@ -61,6 +71,8 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("imapPairsJson", code)
         self.assertIn("sourceMailboxes", code)
         self.assertIn("credentialPairId", code)
+        self.assertIn("hostVar", code)
+        self.assertIn("portVar", code)
 
     def test_apply_code_uses_email_credential_pair(self):
         code = self.nodes_by_name()["Apply Proton labels"]["parameters"]["jsCode"]
@@ -68,6 +80,8 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("item.credentialPair", code)
         self.assertIn("pair.userVar", code)
         self.assertIn("pair.passwordVar", code)
+        self.assertIn("pair.hostVar", code)
+        self.assertIn("pair.portVar", code)
 
 
 if __name__ == "__main__":
