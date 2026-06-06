@@ -21,6 +21,13 @@ class WorkflowJsonTests(unittest.TestCase):
             for assignment in node["parameters"]["assignments"]["assignments"]
         }
 
+    def build_prompt_assignments(self):
+        node = self.nodes_by_name()["Build classification prompt"]
+        return {
+            assignment["name"]: assignment
+            for assignment in node["parameters"]["assignments"]["assignments"]
+        }
+
     def test_imap_action_nodes_are_javascript_code_nodes(self):
         nodes = self.nodes_by_name()
 
@@ -90,6 +97,24 @@ class WorkflowJsonTests(unittest.TestCase):
             code = nodes[name]["parameters"]["jsCode"]
             self.assertIn("net.isIP(this.host)", code)
             self.assertNotIn("servername: this.host", code)
+
+    def test_user_prompt_uses_evaluable_expression(self):
+        assignments = self.build_prompt_assignments()
+        value = assignments["userPrompt"]["value"]
+
+        self.assertNotIn("userPromptTemplate", assignments)
+        self.assertTrue(value.startswith("={{"))
+        self.assertIn("$json.sender_email", value)
+        self.assertIn("$json.email_body", value)
+        self.assertNotIn("{{ $json.sender_email }}", value)
+
+    def test_ollama_model_uses_installed_name(self):
+        nodes = self.nodes_by_name()
+
+        self.assertEqual(
+            nodes["Ollama Chat Model"]["parameters"]["model"],
+            "odytrice/gemma4-26b:4090",
+        )
 
 
 if __name__ == "__main__":
