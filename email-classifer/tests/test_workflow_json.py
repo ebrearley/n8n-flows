@@ -83,6 +83,14 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("pair.hostVar", code)
         self.assertIn("pair.portVar", code)
 
+    def test_tls_servername_is_not_set_for_ip_hosts(self):
+        nodes = self.nodes_by_name()
+
+        for name in ("Get next 50 unclassified emails", "Apply Proton labels"):
+            code = nodes[name]["parameters"]["jsCode"]
+            self.assertIn("net.isIP(this.host)", code)
+            self.assertNotIn("servername: this.host", code)
+
 
 if __name__ == "__main__":
     unittest.main()

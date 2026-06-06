@@ -73,14 +73,23 @@ class ImapClient {
     });
   }
 
+  tlsOptions(options) {
+    const tlsOptions = {
+      ...options,
+      rejectUnauthorized: !this.allowUnauthorizedCerts,
+    };
+    if (!net.isIP(this.host)) {
+      tlsOptions.servername = this.host;
+    }
+    return tlsOptions;
+  }
+
   async connect() {
     const socket = this.ssl
-      ? tls.connect({
+      ? tls.connect(this.tlsOptions({
           host: this.host,
           port: this.port,
-          servername: this.host,
-          rejectUnauthorized: !this.allowUnauthorizedCerts,
-        })
+        }))
       : net.connect({ host: this.host, port: this.port });
 
     this.attachSocket(socket);
@@ -94,11 +103,9 @@ class ImapClient {
     if (!this.ssl && this.startTls) {
       await this.command('STARTTLS');
       this.socket.removeAllListeners('data');
-      this.socket = tls.connect({
+      this.socket = tls.connect(this.tlsOptions({
         socket: this.socket,
-        servername: this.host,
-        rejectUnauthorized: !this.allowUnauthorizedCerts,
-      });
+      }));
       this.attachSocket(this.socket);
       await new Promise((resolve, reject) => {
         this.socket.once('secureConnect', resolve);
