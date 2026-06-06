@@ -64,10 +64,27 @@ The workflow does not create labels, create folders, move source messages, delet
 
 The live `Email Trigger (IMAP)` node uses the credential assigned in n8n.
 
-The bulk fetch and label-application Code nodes cannot read the `Email Trigger (IMAP)` credential secrets directly, so they need IMAP credentials from one of these sources:
+The bulk fetch and label-application Code nodes cannot read the `Email Trigger (IMAP)` credential secrets directly, so each IMAP account is configured as an entry in `imapPairsJson` on `Configure Proton IMAP batch`.
 
-1. n8n variables named `IMAP_USER` and `IMAP_PASSWORD`.
-2. Runtime environment variables named `IMAP_USER` and `IMAP_PASSWORD`.
+Each credential pair names the variables that hold its username and password:
+
+```json
+[
+  {
+    "id": "imap-1",
+    "host": "192.168.3.200",
+    "port": 1143,
+    "startTls": true,
+    "userVar": "IMAP_1_USER",
+    "passwordVar": "IMAP_1_PASSWORD",
+    "sourceMailboxes": ["INBOX"],
+    "labelPrefix": "Labels",
+    "stateLabel": "Classified"
+  }
+]
+```
+
+The workflow reads those variable names from n8n variables first, then from runtime environment variables. The default workflow includes placeholders for `IMAP_1_USER`, `IMAP_1_PASSWORD`, `IMAP_2_USER`, and `IMAP_2_PASSWORD`.
 
 For environment variables, n8n 2 blocks Code-node environment access by default. Enabling that path requires:
 

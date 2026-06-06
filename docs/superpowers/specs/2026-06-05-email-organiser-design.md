@@ -5,7 +5,7 @@ Workflow: `Email Organiser` (`fm6pLPnZWsGfK1oH`)
 
 ## Current Revision
 
-`Email Organiser` is an inactive 15-node n8n workflow with two entry points:
+`Email Organiser` is an inactive n8n workflow with two entry points:
 
 - a manual bulk pass that fetches up to 50 unclassified IMAP emails at a time, loops over them one by one, and repeats until no unclassified emails remain;
 - an `Email Trigger (IMAP)` path that classifies one newly received email.
@@ -31,17 +31,17 @@ The workflow must not create labels, create folders, move source messages, delet
 Manual bulk pass:
 
 1. `Manual Trigger` starts the pass from n8n.
-2. `Configure Proton IMAP batch` sets host `192.168.3.200`, port `1143`, STARTTLS, `sourceMailbox=INBOX`, `labelPrefix=Labels`, `stateLabel=Classified`, and `batchLimit=50`.
-3. `Get next 50 unclassified emails` runs `email_classifier.py` in `fetch_batch` mode.
-4. The script connects through IMAP using n8n process environment variables `IMAP_USER` and `IMAP_PASSWORD`.
-5. The script scans `INBOX`, skips messages already present in `Labels/Classified` by `Message-ID`, and returns up to 50 email items.
+2. `Configure Proton IMAP batch` sets `imapPairsJson`, `batchLimit=50`, and fallback IMAP defaults.
+3. `Get next 50 unclassified emails` runs JavaScript in an n8n Code node.
+4. The Code node iterates credential pairs, reading each pair's `userVar` and `passwordVar` from n8n variables first, then environment variables.
+5. The Code node scans each pair's `sourceMailboxes`, skips messages already present in that account's `Labels/Classified` by `Message-ID`, and returns up to 50 email items.
 6. `Expand fetched emails` turns the script JSON into one n8n item per email.
 7. `Loop Over Emails` processes one email at a time.
 8. `Build classification prompt` creates the editable system prompt and per-email user prompt.
 9. `Classify with Ollama` classifies the email with the local Ollama model and structured JSON parser.
 10. `Prepare Proton label targets` validates labels, drops unknown/low-confidence labels, maps accepted labels to `Labels/<label>`, and always adds `Labels/Classified`.
 11. `From bulk loop?` routes bulk items to `Apply Proton labels`.
-12. `Apply Proton labels` runs `email_classifier.py` in `apply_labels` mode and loops back to `Loop Over Emails`.
+12. `Apply Proton labels` uses the email item's `credentialPair` to reconnect to the original account, `UID COPY` the message into each `Labels/<label>` mailbox, and loop back to `Loop Over Emails`.
 13. When the 50-item batch is done, the loop's done output runs `Get next 50 unclassified emails` again. If that fetch returns no emails, the workflow ends.
 
 Live trigger:
@@ -55,13 +55,16 @@ Live trigger:
 
 The live trigger uses the IMAP credential configured in n8n.
 
-The Execute Command nodes cannot read n8n credential secrets directly. The n8n runtime therefore also needs:
+The Code nodes cannot read n8n credential secrets directly. `imapPairsJson` names the variables for each account, for example:
 
 ```bash
-IMAP_USER=...
-IMAP_PASSWORD=...
-EMAIL_CLASSIFIER_SCRIPT=/home/node/.n8n/email-classifer/email_classifier.py
+IMAP_1_USER=...
+IMAP_1_PASSWORD=...
+IMAP_2_USER=...
+IMAP_2_PASSWORD=...
 ```
+
+If those values are supplied through Coolify environment variables rather than n8n variables, n8n also needs `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
 
 Production execution should be queued with concurrency `1` before activation so the local Ollama GPU only handles one classifier workflow at a time.
 

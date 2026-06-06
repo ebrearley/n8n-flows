@@ -8,7 +8,7 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 `Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, structured JSON parser, Proton label target preparation, and separate JavaScript Code-node apply paths for bulk and trigger processing.
 
-The saved n8n workflow is not active and is not published. Manual execution now reaches `Get next 50 unclassified emails` and is blocked on missing `IMAP_USER` / `IMAP_PASSWORD` access for the Code node.
+The saved n8n workflow is not active and is not published. Manual execution now reaches `Get next 50 unclassified emails` and is blocked until real IMAP credential values are provided for the configured credential pairs.
 
 ## Proton IMAP Target
 
@@ -66,14 +66,20 @@ The Python helper is retained only as legacy local test coverage. The current wo
 
 The `Email Trigger (IMAP)` node uses the IMAP credential assigned in n8n.
 
-The bulk fetch and label-application Code nodes cannot read n8n credential secrets directly. They currently read the following keys from n8n variables first, then from environment variables:
+The bulk fetch and label-application Code nodes cannot read n8n credential secrets directly. They use `imapPairsJson` on `Configure Proton IMAP batch` to define one or more IMAP credential pairs. Each pair names the variables that hold its credentials. The default placeholders are:
 
 ```bash
-IMAP_USER=...
-IMAP_PASSWORD=...
+IMAP_1_USER=...
+IMAP_1_PASSWORD=...
+IMAP_2_USER=...
+IMAP_2_PASSWORD=...
 ```
 
+The Code nodes read these names from n8n variables first, then from environment variables.
+
 If using environment variables instead of n8n variables, n8n 2 blocks Code-node environment access by default. Enabling environment access requires setting `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`, which lets Code nodes read runtime environment variables and needs explicit approval.
+
+Coolify placeholder env vars have been created on the n8n service for `IMAP_1_USER`, `IMAP_1_PASSWORD`, `IMAP_2_USER`, and `IMAP_2_PASSWORD`. Replace the placeholder values in Coolify before executing the workflow.
 
 ## n8n MCP
 
@@ -90,6 +96,7 @@ No `enabled_tools` allow-list is configured, so Codex should expose all tools ad
 ## Open Checks
 
 - Confirm the `Ollama Chat Model` credential/endpoint is valid in n8n if the UI asks for an `Ollama account`.
-- Provide `IMAP_USER` and `IMAP_PASSWORD` through n8n variables, or explicitly approve `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` and set them as Coolify runtime env vars.
+- Replace placeholder values for `IMAP_1_USER`, `IMAP_1_PASSWORD`, `IMAP_2_USER`, and `IMAP_2_PASSWORD`; add more pairs and variables if needed.
+- If using Coolify runtime env vars rather than n8n variables, explicitly approve `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
 - Confirm all Proton labels exist under `Labels`, including `Labels/Classified`.
 - Configure production queue/concurrency to `1` before activating the workflow.

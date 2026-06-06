@@ -309,6 +309,8 @@ function summaryFromRaw(uid, raw, config) {
     email_body: body,
     sourceFlow: 'bulk',
     runMode: 'apply_labels',
+    credentialPairId: config.id,
+    credentialPair: publicCredentialPair(config),
     sourceMailbox: config.sourceMailbox,
     labelPrefix: config.labelPrefix,
     stateLabel: config.stateLabel,
@@ -347,6 +349,101 @@ function envValue(name) {
   return '';
 }
 
+function listValue(value, fallback) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return fallback;
+    if (trimmed.startsWith('[')) {
+      const parsed = JSON.parse(trimmed);
+      if (!Array.isArray(parsed)) throw new Error('Expected sourceMailboxes JSON to be an array');
+      return parsed.map((item) => String(item).trim()).filter(Boolean);
+    }
+    return trimmed.split(',').map((item) => item.trim()).filter(Boolean);
+  }
+  return fallback;
+}
+
+function parseCredentialPairs(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) throw new Error('credentialPairsJson must contain a JSON array');
+    return parsed;
+  }
+  return [];
+}
+
+function normalizeCredentialPair(rawPair, index, defaults) {
+  const pair = rawPair && typeof rawPair === 'object' ? rawPair : {};
+  const sourceMailboxes = listValue(
+    pair.sourceMailboxes ?? pair.sourceMailbox,
+    [defaults.sourceMailbox],
+  );
+
+  if (sourceMailboxes.length === 0) {
+    throw new Error(`Credential pair ${pair.id || index + 1} must include at least one source mailbox`);
+  }
+
+  return {
+    id: String(configValue(pair, 'id', `imap-${index + 1}`)),
+    host: String(configValue(pair, 'host', defaults.host)),
+    port: Number(configValue(pair, 'port', defaults.port)),
+    ssl: boolValue(pair.ssl ?? pair.imapSsl, defaults.ssl),
+    startTls: boolValue(pair.startTls ?? pair.imapStartTls, defaults.startTls),
+    allowUnauthorizedCerts: boolValue(
+      pair.allowUnauthorizedCerts,
+      defaults.allowUnauthorizedCerts,
+    ),
+    userVar: String(configValue(pair, 'userVar', defaults.userVar)),
+    passwordVar: String(configValue(pair, 'passwordVar', defaults.passwordVar)),
+    sourceMailboxes,
+    labelPrefix: String(configValue(pair, 'labelPrefix', defaults.labelPrefix)),
+    stateLabel: String(configValue(pair, 'stateLabel', defaults.stateLabel)),
+    dryRun: defaults.dryRun,
+  };
+}
+
+function credentialPairsFromConfig(inputConfig, defaults) {
+  const configuredPairs = parseCredentialPairs(
+    inputConfig.imapPairs ?? inputConfig.imapPairsJson ?? inputConfig.credentialPairs ?? inputConfig.credentialPairsJson,
+  );
+
+  const pairs = configuredPairs.length > 0
+    ? configuredPairs
+    : [{
+        id: 'imap-1',
+        host: defaults.host,
+        port: defaults.port,
+        ssl: defaults.ssl,
+        startTls: defaults.startTls,
+        allowUnauthorizedCerts: defaults.allowUnauthorizedCerts,
+        userVar: defaults.userVar,
+        passwordVar: defaults.passwordVar,
+        sourceMailboxes: [defaults.sourceMailbox],
+        labelPrefix: defaults.labelPrefix,
+        stateLabel: defaults.stateLabel,
+      }];
+
+  return pairs.map((pair, index) => normalizeCredentialPair(pair, index, defaults));
+}
+
+function publicCredentialPair(pair) {
+  return {
+    id: pair.id,
+    host: pair.host,
+    port: pair.port,
+    ssl: pair.ssl,
+    startTls: pair.startTls,
+    allowUnauthorizedCerts: pair.allowUnauthorizedCerts,
+    userVar: pair.userVar,
+    passwordVar: pair.passwordVar,
+    sourceMailboxes: pair.sourceMailboxes,
+    labelPrefix: pair.labelPrefix,
+    stateLabel: pair.stateLabel,
+  };
+}
+
 let inputConfig = {};
 try {
   inputConfig = $('Configure Proton IMAP batch').first().json;
@@ -355,7 +452,7 @@ try {
 }
 
 const runIndex = typeof $runIndex === 'number' ? $runIndex : 0;
-const config = {
+const defaults = {
   host: String(configValue(inputConfig, 'imapHost', '192.168.3.200')),
   port: Number(configValue(inputConfig, 'imapPort', 1143)),
   ssl: boolValue(inputConfig.imapSsl, false),
@@ -364,48 +461,63 @@ const config = {
   sourceMailbox: String(configValue(inputConfig, 'sourceMailbox', 'INBOX')),
   labelPrefix: String(configValue(inputConfig, 'labelPrefix', 'Labels')),
   stateLabel: String(configValue(inputConfig, 'stateLabel', 'Classified')),
+  userVar: String(configValue(inputConfig, 'userVar', 'IMAP_USER')),
+  passwordVar: String(configValue(inputConfig, 'passwordVar', 'IMAP_PASSWORD')),
   batchLimit: Number(configValue(inputConfig, 'batchLimit', 50)),
   dryRun: boolValue(inputConfig.dryRun, false),
 };
 
-if (config.dryRun && runIndex > 0) {
+if (defaults.dryRun && runIndex > 0) {
   return [{ json: { emails: [], total_emails: 0, stopped_reason: 'dry_run_single_batch' } }];
 }
 
-const username = envValue('IMAP_USER');
-const password = envValue('IMAP_PASSWORD');
-if (!username || !password) {
-  throw new Error('IMAP_USER and IMAP_PASSWORD must be set in the n8n runtime environment for manual batch processing.');
-}
-
-const stateMailbox = `${config.labelPrefix}/${config.stateLabel}`;
-const client = new ImapClient(config);
+const credentialPairs = credentialPairsFromConfig(inputConfig, defaults);
 const emails = [];
 const warnings = [];
 
-try {
-  await client.connect();
-  await client.login(username, password);
+for (const pair of credentialPairs) {
+  if (emails.length >= defaults.batchLimit) break;
 
-  const stateMailboxExists = await client.mailboxExists(stateMailbox);
-  if (!stateMailboxExists && !config.dryRun) {
-    throw new Error(`Required Proton label mailbox does not exist: ${stateMailbox}`);
+  const username = envValue(pair.userVar);
+  const password = envValue(pair.passwordVar);
+  if (!username || !password) {
+    throw new Error(`Credential pair ${pair.id} requires n8n variables ${pair.userVar} and ${pair.passwordVar}.`);
   }
-  if (!stateMailboxExists) warnings.push(`State mailbox not found during dry-run: ${stateMailbox}`);
 
-  const uids = (await client.searchAll(config.sourceMailbox)).reverse();
-  for (const uid of uids) {
-    const raw = await client.fetchRaw(uid, config.sourceMailbox);
-    const summary = summaryFromRaw(uid, raw, config);
-    if (stateMailboxExists && summary.message_id) {
-      const matches = await client.searchMessageId(stateMailbox, summary.message_id);
-      if (matches.length > 0) continue;
+  const stateMailbox = `${pair.labelPrefix}/${pair.stateLabel}`;
+  const client = new ImapClient(pair);
+
+  try {
+    await client.connect();
+    await client.login(username, password);
+
+    const stateMailboxExists = await client.mailboxExists(stateMailbox);
+    if (!stateMailboxExists && !pair.dryRun) {
+      throw new Error(`Required Proton label mailbox does not exist for credential pair ${pair.id}: ${stateMailbox}`);
     }
-    emails.push(summary);
-    if (emails.length >= config.batchLimit) break;
+    if (!stateMailboxExists) {
+      warnings.push(`State mailbox not found during dry-run for credential pair ${pair.id}: ${stateMailbox}`);
+    }
+
+    for (const sourceMailbox of pair.sourceMailboxes) {
+      if (emails.length >= defaults.batchLimit) break;
+
+      const mailboxConfig = { ...pair, sourceMailbox, dryRun: defaults.dryRun };
+      const uids = (await client.searchAll(sourceMailbox)).reverse();
+      for (const uid of uids) {
+        const raw = await client.fetchRaw(uid, sourceMailbox);
+        const summary = summaryFromRaw(uid, raw, mailboxConfig);
+        if (stateMailboxExists && summary.message_id) {
+          const matches = await client.searchMessageId(stateMailbox, summary.message_id);
+          if (matches.length > 0) continue;
+        }
+        emails.push(summary);
+        if (emails.length >= defaults.batchLimit) break;
+      }
+    }
+  } finally {
+    await client.logout().catch(() => {});
   }
-} finally {
-  await client.logout().catch(() => {});
 }
 
 return [{

@@ -195,12 +195,35 @@ function envValue(name) {
   return '';
 }
 
+function normalizeCredentialPair(item) {
+  const pair = item.credentialPair && typeof item.credentialPair === 'object'
+    ? item.credentialPair
+    : {};
+
+  return {
+    id: String(configValue(pair, 'id', item.credentialPairId || 'imap-1')),
+    host: String(configValue(pair, 'host', configValue(item, 'imapHost', '192.168.3.200'))),
+    port: Number(configValue(pair, 'port', configValue(item, 'imapPort', 1143))),
+    ssl: boolValue(pair.ssl ?? pair.imapSsl, boolValue(item.imapSsl, false)),
+    startTls: boolValue(pair.startTls ?? pair.imapStartTls, boolValue(item.imapStartTls, true)),
+    allowUnauthorizedCerts: boolValue(
+      pair.allowUnauthorizedCerts,
+      boolValue(item.allowUnauthorizedCerts, true),
+    ),
+    userVar: String(configValue(pair, 'userVar', configValue(item, 'userVar', 'IMAP_USER'))),
+    passwordVar: String(configValue(pair, 'passwordVar', configValue(item, 'passwordVar', 'IMAP_PASSWORD'))),
+    labelPrefix: String(configValue(pair, 'labelPrefix', configValue(item, 'labelPrefix', 'Labels'))),
+    stateLabel: String(configValue(pair, 'stateLabel', configValue(item, 'stateLabel', 'Classified'))),
+  };
+}
+
 const item = $input.first()?.json ?? {};
+const pair = normalizeCredentialPair(item);
 const targetMailboxes = Array.isArray(item.targetMailboxes)
   ? item.targetMailboxes
   : [
       ...(Array.isArray(item.labelMailboxes) ? item.labelMailboxes : []),
-      `${item.labelPrefix || 'Labels'}/${item.stateLabel || 'Classified'}`,
+      `${pair.labelPrefix}/${pair.stateLabel}`,
     ];
 
 const uniqueTargets = [...new Set(targetMailboxes.filter(Boolean))];
@@ -216,18 +239,18 @@ if (dryRun) {
   }];
 }
 
-const username = envValue('IMAP_USER');
-const password = envValue('IMAP_PASSWORD');
+const username = envValue(pair.userVar);
+const password = envValue(pair.passwordVar);
 if (!username || !password) {
-  throw new Error('IMAP_USER and IMAP_PASSWORD must be set in the n8n runtime environment for applying Proton labels.');
+  throw new Error(`Credential pair ${pair.id} requires n8n variables ${pair.userVar} and ${pair.passwordVar}.`);
 }
 
 const config = {
-  host: String(configValue(item, 'imapHost', '192.168.3.200')),
-  port: Number(configValue(item, 'imapPort', 1143)),
-  ssl: boolValue(item.imapSsl, false),
-  startTls: boolValue(item.imapStartTls, true),
-  allowUnauthorizedCerts: boolValue(item.allowUnauthorizedCerts, true),
+  host: pair.host,
+  port: pair.port,
+  ssl: pair.ssl,
+  startTls: pair.startTls,
+  allowUnauthorizedCerts: pair.allowUnauthorizedCerts,
 };
 
 const sourceMailbox = String(configValue(item, 'sourceMailbox', 'INBOX'));
