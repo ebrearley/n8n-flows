@@ -100,6 +100,19 @@ class WorkflowJsonTests(unittest.TestCase):
             self.assertIn("skipped_missing_mailbox", code)
             self.assertNotIn("Required Proton label mailbox does not exist", code)
 
+    def test_email_items_include_recipient_fields_for_missing_label_debugging(self):
+        nodes = self.nodes_by_name()
+        fetch_code = nodes["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+        trigger_code = nodes["Normalize trigger email"]["parameters"]["jsCode"]
+        apply_code = nodes["Apply Proton labels"]["parameters"]["jsCode"]
+
+        self.assertIn("recipientParts", fetch_code)
+        self.assertIn("headers.to", fetch_code)
+        self.assertIn("recipient_email", fetch_code)
+        self.assertIn("const recipient = parseSender", trigger_code)
+        self.assertIn("recipient_email", trigger_code)
+        self.assertIn("...item", apply_code)
+
     def test_tls_servername_is_not_set_for_ip_hosts(self):
         nodes = self.nodes_by_name()
 

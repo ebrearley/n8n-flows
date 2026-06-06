@@ -234,6 +234,28 @@ function senderParts(header) {
   };
 }
 
+function recipientParts(header) {
+  const decoded = decodeEncodedWords(header || '');
+  const primary = decoded.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/)[0]?.trim() || decoded;
+  const match = primary.match(/^(.*?)\s*<([^>]+)>$/);
+  if (match) {
+    const email = match[2].trim();
+    return {
+      to: decoded,
+      recipient: email,
+      recipient_name: match[1].replace(/^"|"$/g, '').trim(),
+      recipient_email: email,
+    };
+  }
+  const email = primary.includes('@') ? primary.trim() : '';
+  return {
+    to: decoded,
+    recipient: email || decoded,
+    recipient_name: '',
+    recipient_email: email,
+  };
+}
+
 function decodeQuotedPrintable(value) {
   return String(value || '')
     .replace(/=\r?\n/g, '')
@@ -302,6 +324,7 @@ function summaryFromRaw(uid, raw, config) {
   const split = splitRawMessage(raw);
   const headers = parseHeaders(split.headersRaw);
   const sender = senderParts(headers.from || '');
+  const recipient = recipientParts(headers.to || headers['delivered-to'] || headers['x-original-to'] || '');
   const subject = decodeEncodedWords(headers.subject || '');
   const body = messageBody(raw, headers).replace(/\s+/g, ' ').trim().slice(0, 4000);
 
@@ -309,6 +332,7 @@ function summaryFromRaw(uid, raw, config) {
     uid: String(uid),
     message_id: headers['message-id'] || '',
     ...sender,
+    ...recipient,
     subject,
     email_subject: subject,
     date: headers.date || '',
