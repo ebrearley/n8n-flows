@@ -1,4 +1,5 @@
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -139,12 +140,66 @@ class WorkflowJsonTests(unittest.TestCase):
             "odytrice/gemma4-26b:4090",
         )
 
-    def test_classification_retries_parser_failures(self):
+    def test_classification_retries_model_failures(self):
         node = self.nodes_by_name()["Classify with Ollama"]
 
         self.assertTrue(node["retryOnFail"])
         self.assertEqual(node["maxTries"], 3)
         self.assertEqual(node["waitBetweenTries"], 1000)
+
+    def test_uncertain_fenced_ai_output_applies_only_classified_and_continues(self):
+        workflow = self.load_workflow()
+        nodes = self.nodes_by_name()
+        classify_node = nodes["Classify with Ollama"]
+
+        self.assertFalse(classify_node["parameters"].get("hasOutputParser", False))
+        self.assertNotIn("Classification JSON Parser", workflow["connections"])
+
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '3542',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: '```json\n{\n  "labels": [\n    {\n      "label": "uncertain",\n      "confidence": 0.5\n    }\n  ],\n  "reason": "The email is an appointment confirmation, which does not clearly fit into the specific categories provided."\n}\n```',
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(
+            result["classification"]["labels"],
+            [{"label": "uncertain", "confidence": 0.5}],
+        )
+        self.assertEqual(result["labels"], [])
+        self.assertEqual(result["labelMailboxes"], [])
+        self.assertEqual(result["targetMailboxes"], ["Labels/Classified"])
+        self.assertEqual(result["runMode"], "apply_labels")
 
 
 if __name__ == "__main__":

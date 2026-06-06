@@ -236,7 +236,7 @@
         "options": {
           "systemMessage": "={{ $json.systemPrompt }}"
         },
-        "hasOutputParser": true
+        "hasOutputParser": false
       },
       "retryOnFail": true,
       "maxTries": 3,
@@ -260,20 +260,6 @@
       }
     },
     {
-      "id": "5b0d23a5-a807-4c94-801e-458bb28007a5",
-      "name": "Classification JSON Parser",
-      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
-      "typeVersion": 1.3,
-      "position": [
-        1080,
-        620
-      ],
-      "parameters": {
-        "schemaType": "fromJson",
-        "jsonSchemaExample": "{\"labels\":[{\"label\":\"Invoice\",\"confidence\":0.9},{\"label\":\"Purchase\",\"confidence\":0.8}],\"reason\":\"One sentence justification\"}"
-      }
-    },
-    {
       "id": "e74e0235-f9e9-43e9-bda8-01f098402e13",
       "name": "Prepare Proton label targets",
       "type": "n8n-nodes-base.code",
@@ -283,7 +269,7 @@
         360
       ],
       "parameters": {
-        "jsCode": "const source = $('Build classification prompt').item.json;\nconst allowed = [\"Invoice\",\"Purchase\",\"Bill\",\"Payment\",\"Marketing\",\"Cold email\",\"Important\",\"Awaiting reply\",\"Travel\",\"Ticket\",\"Infrastructure\",\"Hustle\"];\n\nfunction parseAiOutput(value) {\n  if (value && typeof value === 'object' && 'output' in value && Object.keys(value).length === 1) {\n    return parseAiOutput(value.output);\n  }\n  if (typeof value === 'string') {\n    return JSON.parse(value);\n  }\n  return value;\n}\n\nlet parsed;\ntry {\n  parsed = parseAiOutput($json.output ?? $json);\n} catch (error) {\n  parsed = { labels: [{ label: 'uncertain', confidence: 0 }], reason: 'format violation or instruction conflict' };\n}\n\nconst accepted = [];\nfor (const item of Array.isArray(parsed?.labels) ? parsed.labels : []) {\n  const label = item?.label;\n  const confidence = Math.max(0, Math.min(1, Number(item?.confidence ?? 0)));\n  if (!allowed.includes(label) || confidence < 0.75) continue;\n  if (!accepted.some((existing) => existing.label === label)) {\n    accepted.push({ label, confidence });\n  }\n}\n\nconst reason = String(parsed?.reason ?? (accepted.length ? 'Classifier returned matching labels' : 'No label reached confidence threshold')).slice(0, 240);\nconst labelPrefix = source.labelPrefix || 'Labels';\nconst stateLabel = source.stateLabel || 'Classified';\nconst labelMailboxes = accepted.map((item) => `${labelPrefix}/${item.label}`);\nconst stateMailbox = `${labelPrefix}/${stateLabel}`;\nconst targetMailboxes = [...labelMailboxes];\nif (!targetMailboxes.includes(stateMailbox)) targetMailboxes.push(stateMailbox);\n\nreturn [{\n  json: {\n    ...source,\n    runMode: 'apply_labels',\n    classification: {\n      labels: accepted.length ? accepted : [{ label: 'uncertain', confidence: Number(parsed?.labels?.[0]?.confidence ?? 0) }],\n      reason,\n    },\n    labels: accepted,\n    labelMailboxes,\n    stateMailbox,\n    targetMailboxes,\n  },\n}];"
+        "jsCode": "const source = $('Build classification prompt').item.json;\nconst allowed = [\"Invoice\",\"Purchase\",\"Bill\",\"Payment\",\"Marketing\",\"Cold email\",\"Important\",\"Awaiting reply\",\"Travel\",\"Ticket\",\"Infrastructure\",\"Hustle\"];\n\nfunction clampConfidence(value) {\n  const confidence = Number(value ?? 0);\n  if (!Number.isFinite(confidence)) return 0;\n  return Math.max(0, Math.min(1, confidence));\n}\n\nfunction extractJsonText(value) {\n  let text = String(value || '').trim();\n  const fenced = text.match(/^```(?:json)?\\s*([\\s\\S]*?)\\s*```$/i);\n  if (fenced) {\n    text = fenced[1].trim();\n  }\n\n  if (!text.startsWith('{')) {\n    const objectMatch = text.match(/\\{[\\s\\S]*\\}/);\n    if (objectMatch) text = objectMatch[0];\n  }\n\n  return text;\n}\n\nfunction parseAiOutput(value) {\n  if (value && typeof value === 'object') {\n    if (Array.isArray(value.labels)) return value;\n    if ('output' in value) return parseAiOutput(value.output);\n  }\n  if (typeof value === 'string') {\n    return JSON.parse(extractJsonText(value));\n  }\n  return value;\n}\n\nlet parsed;\ntry {\n  parsed = parseAiOutput($json.output ?? $json);\n} catch (error) {\n  parsed = { labels: [{ label: 'uncertain', confidence: 0 }], reason: 'format violation or instruction conflict' };\n}\n\nconst accepted = [];\nconst parsedLabels = Array.isArray(parsed?.labels) ? parsed.labels : [];\nfor (const item of parsedLabels) {\n  const label = item?.label;\n  const confidence = clampConfidence(item?.confidence);\n  if (!allowed.includes(label) || confidence < 0.75) continue;\n  if (!accepted.some((existing) => existing.label === label)) {\n    accepted.push({ label, confidence });\n  }\n}\n\nconst fallbackConfidence = parsedLabels.length > 0\n  ? clampConfidence(parsedLabels[0]?.confidence)\n  : 0;\nconst reason = String(parsed?.reason ?? (accepted.length ? 'Classifier returned matching labels' : 'No label reached confidence threshold')).slice(0, 240);\nconst labelPrefix = source.labelPrefix || 'Labels';\nconst stateLabel = source.stateLabel || 'Classified';\nconst labelMailboxes = accepted.map((item) => `${labelPrefix}/${item.label}`);\nconst stateMailbox = `${labelPrefix}/${stateLabel}`;\nconst targetMailboxes = [...labelMailboxes];\nif (!targetMailboxes.includes(stateMailbox)) targetMailboxes.push(stateMailbox);\n\nreturn [{\n  json: {\n    ...source,\n    runMode: 'apply_labels',\n    classification: {\n      labels: accepted.length ? accepted : [{ label: 'uncertain', confidence: fallbackConfidence }],\n      reason,\n    },\n    labels: accepted,\n    labelMailboxes,\n    stateMailbox,\n    targetMailboxes,\n  },\n}];\n"
       }
     },
     {
@@ -486,17 +472,6 @@
           {
             "node": "Classify with Ollama",
             "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Classification JSON Parser": {
-      "ai_outputParser": [
-        [
-          {
-            "node": "Classify with Ollama",
-            "type": "ai_outputParser",
             "index": 0
           }
         ]

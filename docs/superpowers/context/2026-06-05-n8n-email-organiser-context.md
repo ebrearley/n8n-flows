@@ -6,7 +6,7 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 ## Current Revision
 
-`Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, structured JSON parser, Proton label target preparation, and separate JavaScript Code-node apply paths for bulk and trigger processing.
+`Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, raw JSON parsing in Proton label target preparation, and separate JavaScript Code-node apply paths for bulk and trigger processing.
 
 The saved n8n workflow is not active and is not published. Manual execution now reaches `Get next 50 unclassified emails` and is blocked until real IMAP credential values are provided for the configured credential pairs.
 

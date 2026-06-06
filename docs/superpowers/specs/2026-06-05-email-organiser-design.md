@@ -38,8 +38,8 @@ Manual bulk pass:
 6. `Expand fetched emails` turns the script JSON into one n8n item per email.
 7. `Loop Over Emails` processes one email at a time.
 8. `Build classification prompt` creates the editable system prompt and per-email user prompt.
-9. `Classify with Ollama` classifies the email with the local Ollama model and structured JSON parser.
-10. `Prepare Proton label targets` validates labels, drops unknown/low-confidence labels, maps accepted labels to `Labels/<label>`, and always adds `Labels/Classified`.
+9. `Classify with Ollama` classifies the email with the local Ollama model and returns raw JSON text.
+10. `Prepare Proton label targets` parses raw or fenced JSON, validates labels, drops unknown/low-confidence labels, maps accepted labels to `Labels/<label>`, and always adds `Labels/Classified`.
 11. `From bulk loop?` routes bulk items to `Apply Proton labels`.
 12. `Apply Proton labels` uses the email item's `credentialPair` to reconnect to the original account, `UID COPY` the message into each `Labels/<label>` mailbox, and loop back to `Loop Over Emails`.
 13. When the 50-item batch is done, the loop's done output runs `Get next 50 unclassified emails` again. If that fetch returns no emails, the workflow ends.
