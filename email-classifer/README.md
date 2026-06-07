@@ -47,6 +47,18 @@ Classification happens in the visible n8n AI Agent node `Classify with Ollama`, 
 
 The current workflow uses n8n JavaScript Code nodes for IMAP fetch and label application. The Python helper is retained as legacy local test coverage only.
 
+## Telemetry
+
+The workflow writes run, email, classification, and label-action telemetry through first-party n8n Postgres nodes using the `Workflow Status Postgres` credential. Code nodes prepare query parameters; the Postgres nodes use `queryReplacement` values for n8n 2.23.x compatibility.
+
+The private status app reads the separate `workflow_status` database:
+
+```text
+https://n8n-workflow-status.home.brearley.net
+```
+
+The Coolify app still needs `N8N_API_KEY` replaced with a real n8n API key if workflow metadata enrichment is required. The dashboard can still show telemetry rows from Postgres without that key.
+
 ## Proton Labels
 
 Proton exposes UI labels through IMAP as mailboxes nested under the top-level `Labels` mailbox. The workflow therefore applies labels as:
@@ -122,9 +134,9 @@ Import the workflow JSON into n8n:
 n8n import:workflow --input=email-classifer/workflow.json
 ```
 
-Copy `email_classifier.py` to the path configured by `EMAIL_CLASSIFIER_SCRIPT` on the n8n host.
-
 Assign the IMAP credential to `Email Trigger (IMAP)` and configure the Ollama account/endpoint on `Ollama Chat Model` if n8n asks for it.
+
+The live workflow has been validated with a one-email manual run. Keep it inactive while preparing labels and credentials; use the manual trigger for the initial full backfill.
 
 ## Queueing
 

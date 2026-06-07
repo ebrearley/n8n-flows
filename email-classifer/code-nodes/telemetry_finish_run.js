@@ -30,7 +30,7 @@ return [{
   json: {
     ...item,
     finish_run_params: [
-      telemetry.run_key,
+      telemetry.run_id || $json.run_id || '',
       status,
       stoppedAt,
       errorSummary,

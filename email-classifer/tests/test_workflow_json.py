@@ -102,6 +102,10 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("credentialPairId", code)
         self.assertIn("hostVar", code)
         self.assertIn("portVar", code)
+        self.assertIn("$input.first()?.json", code)
+        self.assertLess(code.index("$input.first()?.json"), code.index("$('Configure Proton IMAP batch')"))
+        self.assertIn("telemetryFromConfig", code)
+        self.assertIn("run_id: config.telemetry?.run_id", code)
 
     def test_apply_code_uses_email_credential_pair(self):
         code = self.nodes_by_name()["Apply Proton labels"]["parameters"]["jsCode"]
@@ -301,6 +305,33 @@ const json = {
         self.assertIn("label_actions", text)
         self.assertIn("estimated_prompt_tokens", text)
         self.assertIn("odytrice/gemma4-26b:4090", text)
+
+    def test_telemetry_inserts_classification_and_label_actions_by_ids(self):
+        nodes = self.nodes_by_name()
+        classification_code = nodes["Telemetry build classification attempt"]["parameters"]["jsCode"]
+        label_code = nodes["Telemetry build label actions"]["parameters"]["jsCode"]
+
+        self.assertIn("source.telemetry?.run_id", classification_code)
+        self.assertIn("source.email_item_id", classification_code)
+        self.assertNotIn("source.telemetry?.run_key,\n      source.credentialPairId", classification_code)
+        self.assertIn("item.telemetry?.run_id", label_code)
+        self.assertIn("item.email_item_id", label_code)
+
+        classification_query = nodes["Telemetry record classification attempt"]["parameters"]["query"]
+        label_query = nodes["Telemetry record label action"]["parameters"]["query"]
+        finish_code = nodes["Telemetry finish run"]["parameters"]["jsCode"]
+        finish_query = nodes["Telemetry update finished run"]["parameters"]["query"]
+
+        self.assertIn("NULLIF($1, '')::uuid", classification_query)
+        self.assertIn("NULLIF($2, '')::uuid", classification_query)
+        self.assertNotIn("metadata->>'run_key'", classification_query)
+        self.assertNotIn("WHERE account_id = $2", classification_query)
+        self.assertIn("NULLIF($1, '')::uuid", label_query)
+        self.assertIn("NULLIF($2, '')::uuid", label_query)
+        self.assertNotIn("metadata->>'run_key'", label_query)
+        self.assertIn("telemetry.run_id", finish_code)
+        self.assertIn("WHERE id = NULLIF($1, '')::uuid", finish_query)
+        self.assertNotIn("metadata->>'run_key'", finish_query)
 
     def test_telemetry_preserves_payload_after_postgres_writes(self):
         workflow = self.load_workflow()

@@ -418,6 +418,8 @@ function summaryFromRaw(uid, raw, config) {
     credentialPair: publicCredentialPair(config),
     sourceMailbox: config.sourceMailbox,
     telemetry: config.telemetry || {},
+    run_id: config.telemetry?.run_id || config.run_id || '',
+    run_key: config.telemetry?.run_key || config.run_key || '',
     batchLimit: config.batchLimit,
     maxBatches: config.maxBatches,
     rawFetchByteLimit: config.rawFetchByteLimit,
@@ -610,11 +612,36 @@ function publicCredentialPair(pair) {
   };
 }
 
+function telemetryFromConfig(config) {
+  const telemetry = config.telemetry && typeof config.telemetry === 'object'
+    ? config.telemetry
+    : {};
+  if (Object.keys(telemetry).length > 0) return telemetry;
+
+  return {
+    run_id: config.run_id || '',
+    run_key: config.run_key || '',
+    workflow_id: config.workflow_id || '',
+    workflow_name: config.workflow_name || '',
+    execution_id: config.execution_id || '',
+    trigger_mode: config.trigger_mode || '',
+    started_at: config.started_at || '',
+  };
+}
+
 let inputConfig = {};
 try {
-  inputConfig = $('Configure Proton IMAP batch').first().json;
-} catch {
   inputConfig = $input.first()?.json ?? {};
+} catch {
+  inputConfig = {};
+}
+
+if (Object.keys(inputConfig).length === 0) {
+  try {
+    inputConfig = $('Configure Proton IMAP batch').first().json;
+  } catch {
+    inputConfig = {};
+  }
 }
 
 const runIndex = typeof $runIndex === 'number' ? $runIndex : 0;
@@ -637,7 +664,7 @@ const defaults = {
   fetchWatchdogMs: numberValue(configValue(inputConfig, 'fetchWatchdogMs', 120000), 120000, 'Fetch watchdog milliseconds'),
   uidSearchWindow: numberValue(configValue(inputConfig, 'uidSearchWindow', 500), 500, 'UID search window'),
   dryRun: boolValue(inputConfig.dryRun, false),
-  telemetry: inputConfig.telemetry || {},
+  telemetry: telemetryFromConfig(inputConfig),
 };
 
 if (defaults.dryRun && runIndex > 0) {
@@ -647,6 +674,8 @@ if (defaults.dryRun && runIndex > 0) {
       total_emails: 0,
       stopped_reason: 'dry_run_single_batch',
       telemetry: defaults.telemetry,
+      run_id: defaults.telemetry.run_id || '',
+      run_key: defaults.telemetry.run_key || '',
     },
   }];
 }
@@ -660,6 +689,8 @@ if (defaults.maxBatches > 0 && runIndex >= defaults.maxBatches) {
       stopped_reason: 'max_batches_reached',
       max_batches: defaults.maxBatches,
       telemetry: defaults.telemetry,
+      run_id: defaults.telemetry.run_id || '',
+      run_key: defaults.telemetry.run_key || '',
     },
   }];
 }
@@ -722,6 +753,8 @@ for (const pair of credentialPairs) {
         sourceMailbox,
         dryRun: defaults.dryRun,
         telemetry: defaults.telemetry,
+        run_id: defaults.telemetry.run_id || '',
+        run_key: defaults.telemetry.run_key || '',
         batchLimit: defaults.batchLimit,
         maxBatches: defaults.maxBatches,
         rawFetchByteLimit: defaults.rawFetchByteLimit,

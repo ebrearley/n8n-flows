@@ -19,11 +19,8 @@ if (targets.length === 0) {
     json: {
       ...item,
       label_action_params: [
-        item.telemetry?.run_key,
-        item.credentialPairId || item.account_id || 'imap-1',
-        item.sourceMailbox || 'INBOX',
-        String(item.uidvalidity || ''),
-        String(item.uid || ''),
+        item.telemetry?.run_id || item.run_id || '',
+        item.email_item_id || '',
         '',
         'error',
         String(item.uid || ''),
@@ -49,11 +46,8 @@ return targets.map(([mailbox, action]) => {
     json: {
       ...item,
       label_action_params: [
-        item.telemetry?.run_key,
-        item.credentialPairId || item.account_id || 'imap-1',
-        item.sourceMailbox || 'INBOX',
-        String(item.uidvalidity || ''),
-        String(item.uid || ''),
+        item.telemetry?.run_id || item.run_id || '',
+        item.email_item_id || '',
         mailbox,
         status,
         String(item.uid || ''),

@@ -72,11 +72,8 @@ return [{
     ...item,
     telemetry_payload_json: payloadJson(item),
     classification_attempt_params: [
-      source.telemetry?.run_key,
-      source.credentialPairId || 'imap-1',
-      source.sourceMailbox || 'INBOX',
-      String(source.uidvalidity || ''),
-      String(source.uid || ''),
+      source.telemetry?.run_id || source.run_id || '',
+      source.email_item_id || '',
       model,
       prompt,
       rawResponse,

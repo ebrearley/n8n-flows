@@ -1342,7 +1342,7 @@ Add these n8n nodes to `workflow.json` and `workflow-imap-trigger.json`:
     "query": "WITH workflow_row AS (INSERT INTO workflows (n8n_workflow_id, name, last_seen_at) VALUES ($1, $2, now()) ON CONFLICT (n8n_workflow_id) DO UPDATE SET name = excluded.name, last_seen_at = now() RETURNING id), run_row AS (INSERT INTO workflow_runs (workflow_id, n8n_execution_id, trigger_mode, status, started_at, metadata) SELECT id, $3, $4, 'running', $5::timestamptz, jsonb_build_object('run_key', $6) FROM workflow_row RETURNING id) SELECT id FROM run_row;",
     "options": {
       "queryBatching": "independently",
-      "queryParameters": "={{ [$json.telemetry.workflow_id, $json.telemetry.workflow_name, $json.telemetry.execution_id, $json.telemetry.trigger_mode, $json.telemetry.started_at, $json.telemetry.run_key] }}"
+      "queryReplacement": "={{ [$json.telemetry.workflow_id, $json.telemetry.workflow_name, $json.telemetry.execution_id, $json.telemetry.trigger_mode, $json.telemetry.started_at, $json.telemetry.run_key] }}"
     }
   },
   "credentials": {
