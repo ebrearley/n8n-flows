@@ -102,7 +102,7 @@ return [{
       stoppedAt,
       payloadJson(outputJson),
       errorJson,
-      payloadJson(outputJson),
+      payloadJson(item),
     ],
   },
 }];

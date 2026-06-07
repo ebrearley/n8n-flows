@@ -101,7 +101,7 @@ return [{
       sortOrder,
       startedAt,
       payloadJson(inputJson),
-      payloadJson(inputJson),
+      payloadJson(item),
     ],
   },
 }];

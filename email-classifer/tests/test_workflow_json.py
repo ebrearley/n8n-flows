@@ -298,6 +298,7 @@ const json = {
             self.assertIn("slice(0, 500)", code)
             self.assertIn("password", code)
             self.assertIn("N8N_API_KEY", code)
+            self.assertIn("payloadJson(item)", code)
             self.assertNotIn("raw_content", code)
             self.assertNotIn("email_body: item.email_body", code)
 
