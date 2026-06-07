@@ -30,10 +30,18 @@ NODE_CODE = {
 }
 
 
+def code_file_for_node(name: str) -> str | None:
+    if name.startswith("Telemetry start step: "):
+        return "telemetry_start_step.js"
+    if name.startswith("Telemetry finish step: "):
+        return "telemetry_finish_step.js"
+    return NODE_CODE.get(name)
+
+
 def sync(path: Path) -> None:
     workflow = json.loads(path.read_text(encoding="utf-8"))
     for node in workflow["nodes"]:
-        filename = NODE_CODE.get(node["name"])
+        filename = code_file_for_node(node["name"])
         if filename:
             node["parameters"]["jsCode"] = (ROOT / "code-nodes" / filename).read_text(
                 encoding="utf-8",

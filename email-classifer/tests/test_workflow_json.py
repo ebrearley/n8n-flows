@@ -288,6 +288,19 @@ const json = {
             any(node["type"] == "n8n-nodes-base.executeCommand" for node in telemetry_nodes),
         )
 
+    def test_step_telemetry_code_sanitizes_payloads(self):
+        start_code = (ROOT / "code-nodes" / "telemetry_start_step.js").read_text(encoding="utf-8")
+        finish_code = (ROOT / "code-nodes" / "telemetry_finish_step.js").read_text(encoding="utf-8")
+
+        for code in (start_code, finish_code):
+            self.assertIn("sanitizeForStepTelemetry", code)
+            self.assertIn("body_preview", code)
+            self.assertIn("slice(0, 500)", code)
+            self.assertIn("password", code)
+            self.assertIn("N8N_API_KEY", code)
+            self.assertNotIn("raw_content", code)
+            self.assertNotIn("email_body: item.email_body", code)
+
     def test_telemetry_postgres_nodes_stop_on_error_during_setup(self):
         for node in self.load_workflow()["nodes"]:
             if node["name"].startswith("Telemetry ") and node["type"] == "n8n-nodes-base.postgres":
