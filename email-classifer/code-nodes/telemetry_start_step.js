@@ -50,7 +50,7 @@ function sanitizeDebugValue(value) {
 
   const result = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (isSecretField(key) || key === 'email_body') continue;
+    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;
     result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);
   }
   return deleteSecretFields(result);

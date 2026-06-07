@@ -331,7 +331,6 @@ const json = {
             self.assertIn("slice(0, 500)", code)
             self.assertIn("password", code)
             self.assertIn("N8N_API_KEY", code)
-            self.assertNotIn("raw_content", code)
             self.assertNotIn("email_body: item.email_body", code)
 
         input_items = [
@@ -382,15 +381,22 @@ const json = {
                 "raw_content": "raw-secret-value",
                 "IMAP_1_PASSWORD": "imap-secret-value",
                 "api_key": "api-secret-value",
-                "destination_actions": {"Inbox": {"api_key": "nested-api-secret"}},
+                "destination_actions": {
+                    "Inbox": {
+                        "api_key": "nested-api-secret",
+                        "raw_content": "nested-raw-secret-value",
+                    },
+                },
             }
         ]
         sensitive_values = (
             full_body,
+            "raw_content",
             "raw-secret-value",
             "imap-secret-value",
             "api-secret-value",
             "nested-api-secret",
+            "nested-raw-secret-value",
         )
 
         for filename, params_name, json_param_index in (
