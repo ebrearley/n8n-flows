@@ -61,16 +61,21 @@ database: workflow_status
 user: workflow_status_app
 ```
 
-The new app and n8n workflow will receive the connection string through environment variables. No database credentials are stored in git.
+The new app receives its connection string through environment variables. The n8n workflow uses an n8n Postgres credential so workflow Code nodes do not receive database credentials directly. No database credentials are stored in git.
 
-Expected environment variables:
+Expected app environment variable:
 
 ```bash
-WORKFLOW_STATUS_DATABASE_URL=postgres://workflow_status_app:<password>@<host>:5432/workflow_status
 DATABASE_URL=postgres://workflow_status_app:<password>@<host>:5432/workflow_status
 ```
 
-`WORKFLOW_STATUS_DATABASE_URL` is for n8n workflow Code nodes. `DATABASE_URL` is for the Next.js app.
+The n8n credential is named `Workflow Status Postgres`.
+
+## Runtime Refinement
+
+The stock n8n container does not include the `pg` Node package, so workflow telemetry writes will use first-party n8n Postgres nodes rather than direct database clients inside Code nodes.
+
+The n8n service still needs database connection details, but they will be configured as an n8n Postgres credential named `Workflow Status Postgres`. Code nodes will prepare telemetry payloads and query parameters; Postgres nodes will execute the writes. This keeps the deployment on the stock n8n image.
 
 ## Database Model
 
