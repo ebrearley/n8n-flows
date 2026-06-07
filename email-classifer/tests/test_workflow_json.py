@@ -274,6 +274,10 @@ const json = {
         workflow = self.load_workflow()
         self.assertEqual(
             workflow["connections"]["Get next 50 unclassified emails"]["main"][0][0]["node"],
+            "Telemetry finish step: Fetch next unclassified emails",
+        )
+        self.assertEqual(
+            workflow["connections"]["Telemetry restore step finish: Fetch next unclassified emails"]["main"][0][0]["node"],
             "Stop if no fetched emails",
         )
         self.assertEqual(
@@ -286,6 +290,10 @@ const json = {
         )
         self.assertEqual(
             workflow["connections"]["Fetched emails?"]["main"][1][0]["node"],
+            "Telemetry start step: Finish run",
+        )
+        self.assertEqual(
+            workflow["connections"]["Telemetry restore step start: Finish run"]["main"][0][0]["node"],
             "Telemetry finish run",
         )
 
@@ -416,6 +424,166 @@ const json = {
         for code in (start_code, finish_code):
             self.assertNotIn("payloadJson(item)", code)
 
+    def test_step_telemetry_nodes_are_generated_and_use_query_replacement(self):
+        workflow = self.load_workflow()
+        trigger_export = json.loads(
+            (ROOT / "workflow-imap-trigger.json").read_text(encoding="utf-8"),
+        )
+        nodes = self.nodes_by_name()
+        trigger_nodes = {node["name"]: node for node in trigger_export["nodes"]}
+        expected_stages = {
+            "Fetch next unclassified emails": {
+                "node": "Get next 50 unclassified emails",
+                "sort": 30,
+            },
+            "Build classification prompt": {
+                "node": "Build classification prompt",
+                "sort": 50,
+            },
+            "Classify with Ollama": {
+                "node": "Classify with Ollama",
+                "sort": 60,
+            },
+            "Prepare Proton label targets": {
+                "node": "Prepare Proton label targets",
+                "sort": 70,
+            },
+            "Apply Proton labels": {
+                "node": "Apply Proton labels",
+                "sort": 80,
+            },
+            "Finish run": {
+                "node": "Telemetry finish run",
+                "sort": 100,
+            },
+        }
+
+        for stage, config in expected_stages.items():
+            target_node = config["node"]
+            start_name = f"Telemetry start step: {stage}"
+            record_name = f"Telemetry record step: {stage}"
+            restore_start_name = f"Telemetry restore step start: {stage}"
+            finish_name = f"Telemetry finish step: {stage}"
+            update_name = f"Telemetry update step: {stage}"
+            restore_finish_name = f"Telemetry restore step finish: {stage}"
+
+            for name in (
+                start_name,
+                record_name,
+                restore_start_name,
+                finish_name,
+                update_name,
+                restore_finish_name,
+            ):
+                self.assertIn(name, nodes)
+                self.assertIn(name, trigger_nodes)
+
+            self.assertEqual(nodes[start_name]["type"], "n8n-nodes-base.code")
+            self.assertEqual(nodes[finish_name]["type"], "n8n-nodes-base.code")
+            self.assertEqual(nodes[record_name]["type"], "n8n-nodes-base.postgres")
+            self.assertEqual(nodes[update_name]["type"], "n8n-nodes-base.postgres")
+            start_code = nodes[start_name]["parameters"]["jsCode"]
+            self.assertIn(
+                f"const TELEMETRY_STEP_NAME = {json.dumps(stage)};",
+                start_code,
+            )
+            self.assertIn(
+                f"const TELEMETRY_STEP_SORT_ORDER = {config['sort']};",
+                start_code,
+            )
+            self.assertEqual(
+                workflow["connections"][start_name]["main"][0][0]["node"],
+                record_name,
+            )
+            self.assertEqual(
+                workflow["connections"][record_name]["main"][0][0]["node"],
+                restore_start_name,
+            )
+            self.assertEqual(
+                workflow["connections"][restore_start_name]["main"][0][0]["node"],
+                target_node,
+            )
+            self.assertEqual(
+                workflow["connections"][target_node]["main"][0][0]["node"],
+                finish_name,
+            )
+            self.assertEqual(
+                workflow["connections"][finish_name]["main"][0][0]["node"],
+                update_name,
+            )
+            self.assertEqual(
+                workflow["connections"][update_name]["main"][0][0]["node"],
+                restore_finish_name,
+            )
+
+            restore_start_code = nodes[restore_start_name]["parameters"]["jsCode"]
+            restore_finish_code = nodes[restore_finish_name]["parameters"]["jsCode"]
+            self.assertIn(f"$('{start_name}').all()", restore_start_code)
+            self.assertIn("source_index", restore_start_code)
+            self.assertIn("telemetry_step_source_index", restore_start_code)
+            self.assertIn("telemetry_step_id", restore_start_code)
+            self.assertIn(f"$('{finish_name}').all()", restore_finish_code)
+            self.assertIn("source_index", restore_finish_code)
+            self.assertIn("telemetry_step_source_index", restore_finish_code)
+
+        step_telemetry_names = {
+            name
+            for name in nodes
+            if name.startswith("Telemetry start step: ")
+            or name.startswith("Telemetry record step: ")
+            or name.startswith("Telemetry restore step start: ")
+            or name.startswith("Telemetry finish step: ")
+            or name.startswith("Telemetry update step: ")
+            or name.startswith("Telemetry restore step finish: ")
+        }
+        trigger_step_telemetry_names = {
+            name
+            for name in trigger_nodes
+            if name.startswith("Telemetry start step: ")
+            or name.startswith("Telemetry record step: ")
+            or name.startswith("Telemetry restore step start: ")
+            or name.startswith("Telemetry finish step: ")
+            or name.startswith("Telemetry update step: ")
+            or name.startswith("Telemetry restore step finish: ")
+        }
+        self.assertEqual(trigger_step_telemetry_names, step_telemetry_names)
+
+        postgres_step_nodes = [
+            node for node in workflow["nodes"]
+            if node["name"].startswith("Telemetry record step: ")
+            or node["name"].startswith("Telemetry update step: ")
+        ]
+        self.assertEqual(len(postgres_step_nodes), len(expected_stages) * 2)
+        for node in postgres_step_nodes:
+            query = node["parameters"]["query"]
+            options = node["parameters"].get("options", {})
+            self.assertEqual(node["type"], "n8n-nodes-base.postgres")
+            self.assertIn("queryReplacement", options)
+            self.assertNotIn("queryParameters", json.dumps(node))
+            self.assertNotIn("payload_json", query)
+            self.assertFalse(node.get("continueOnFail", False))
+            self.assertEqual(
+                node["credentials"]["postgres"]["id"],
+                "wspg_a409ed51b8f18c5e",
+            )
+            self.assertEqual(
+                node["credentials"]["postgres"]["name"],
+                "Workflow Status Postgres",
+            )
+
+            if node["name"].startswith("Telemetry record step: "):
+                self.assertEqual(
+                    options["queryReplacement"],
+                    "={{ $json.telemetry_step_params }}",
+                )
+                self.assertIn("RETURNING id AS step_id, $7::int AS source_index", query)
+            else:
+                self.assertEqual(
+                    options["queryReplacement"],
+                    "={{ $json.telemetry_step_finish_params }}",
+                )
+                self.assertIn("SELECT $6::int AS source_index", query)
+
     def test_telemetry_postgres_nodes_stop_on_error_during_setup(self):
         for node in self.load_workflow()["nodes"]:
             if node["name"].startswith("Telemetry ") and node["type"] == "n8n-nodes-base.postgres":
@@ -484,6 +652,10 @@ const json = {
         )
         self.assertEqual(
             connections["Telemetry restore start payload"]["main"][0][0]["node"],
+            "Telemetry start step: Fetch next unclassified emails",
+        )
+        self.assertEqual(
+            connections["Telemetry restore step start: Fetch next unclassified emails"]["main"][0][0]["node"],
             "Get next 50 unclassified emails",
         )
         self.assertEqual(
@@ -492,14 +664,26 @@ const json = {
         )
         self.assertEqual(
             connections["Telemetry restore email item payload (trigger)"]["main"][0][0]["node"],
+            "Telemetry start step: Build classification prompt",
+        )
+        self.assertEqual(
+            connections["Telemetry restore step start: Build classification prompt"]["main"][0][0]["node"],
             "Build classification prompt",
         )
         self.assertEqual(
             connections["Classify with Ollama"]["main"][0][0]["node"],
+            "Telemetry finish step: Classify with Ollama",
+        )
+        self.assertEqual(
+            connections["Telemetry restore step finish: Classify with Ollama"]["main"][0][0]["node"],
             "Telemetry build classification attempt",
         )
         self.assertEqual(
             connections["Telemetry restore classification payload"]["main"][0][0]["node"],
+            "Telemetry start step: Prepare Proton label targets",
+        )
+        self.assertEqual(
+            connections["Telemetry restore step start: Prepare Proton label targets"]["main"][0][0]["node"],
             "Prepare Proton label targets",
         )
         self.assertEqual(
@@ -576,6 +760,10 @@ const $input = {
         self.assertEqual(trigger_telemetry, workflow_telemetry)
         self.assertEqual(
             trigger_export["connections"]["Classify with Ollama"]["main"][0][0]["node"],
+            "Telemetry finish step: Classify with Ollama",
+        )
+        self.assertEqual(
+            trigger_export["connections"]["Telemetry restore step finish: Classify with Ollama"]["main"][0][0]["node"],
             "Telemetry build classification attempt",
         )
 

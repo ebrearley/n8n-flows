@@ -900,6 +900,654 @@
           "name": "Workflow Status Postgres"
         }
       }
+    },
+    {
+      "id": "474f81b0-df20-5c51-a019-79af0e9eccd5",
+      "name": "Telemetry start step: Fetch next unclassified emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        -180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const TELEMETRY_STEP_NAME = \"Fetch next unclassified emails\";\nconst TELEMETRY_STEP_TYPE = 'n8n-stage';\nconst TELEMETRY_STEP_SORT_ORDER = 30;\n\nfunction payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    run_key: telemetry.run_key || item.run_key || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const sourceItem = inputItem.json ?? {};\n  const item = {\n    ...sourceItem,\n    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,\n    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,\n    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,\n  };\n  const stepName = item.telemetry_step_name || 'unknown';\n  const stepType = item.telemetry_step_type || 'n8n-stage';\n  const sortOrder = Number(item.telemetry_step_sort_order ?? 0);\n  const startedAt = new Date().toISOString();\n  const inputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_started_at: startedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_params: [\n        item.telemetry?.run_id || item.run_id || '',\n        stepName,\n        stepType,\n        sortOrder,\n        startedAt,\n        payloadJson(inputJson),\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "803ec8d2-dc57-5139-8e61-f08a572bb3a3",
+      "name": "Telemetry record step: Fetch next unclassified emails",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -310,
+        -180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_steps (run_id, name, type, status, sort_order, started_at, input_json)\nSELECT NULLIF($1, '')::uuid, $2, $3, 'running', $4::int, $5::timestamptz, $6::jsonb\nWHERE NULLIF($1, '') IS NOT NULL\nRETURNING id AS step_id, $7::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "dbf0f17e-5483-5f28-986c-898878e11260",
+      "name": "Telemetry restore step start: Fetch next unclassified emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        -180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry start step: Fetch next unclassified emails').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n      telemetry_step_id: result.step_id || result.telemetry_step_id || restored.telemetry_step_id || '',\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "bcdbeab6-9248-5331-a2cf-9172512851db",
+      "name": "Telemetry finish step: Fetch next unclassified emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        -60
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    step_id: item.telemetry_step_id || item.step_id || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n    total_emails: item.total_emails || 0,\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const item = inputItem.json ?? {};\n  const stoppedAt = new Date().toISOString();\n  const status = item.error ? 'error' : 'success';\n  const errorJson = item.error\n    ? payloadJson({ message: truncate(item.error.message || item.error) })\n    : null;\n  const outputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_stopped_at: stoppedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_finish_params: [\n        item.telemetry_step_id || item.step_id || '',\n        status,\n        stoppedAt,\n        payloadJson(outputJson),\n        errorJson,\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "2c8d2e7a-1ac6-5c0f-a45b-234fe0a10943",
+      "name": "Telemetry update step: Fetch next unclassified emails",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        110,
+        -60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\n  UPDATE workflow_steps\n  SET\n    status = $2,\n    stopped_at = $3::timestamptz,\n    duration_ms = (extract(epoch from ($3::timestamptz - started_at)) * 1000)::int,\n    output_json = $4::jsonb,\n    error_json = CASE WHEN $5 IS NULL OR $5 = '' THEN NULL ELSE $5::jsonb END\n  WHERE id = NULLIF($1, '')::uuid\n  RETURNING id\n)\nSELECT $6::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_finish_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "7c1b4944-ac26-52b6-8e10-a3be666e7ee2",
+      "name": "Telemetry restore step finish: Fetch next unclassified emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        -60
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry finish step: Fetch next unclassified emails').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "f002060e-39c5-5d47-a653-4e1affe8fa52",
+      "name": "Telemetry start step: Build classification prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const TELEMETRY_STEP_NAME = \"Build classification prompt\";\nconst TELEMETRY_STEP_TYPE = 'n8n-stage';\nconst TELEMETRY_STEP_SORT_ORDER = 50;\n\nfunction payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    run_key: telemetry.run_key || item.run_key || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const sourceItem = inputItem.json ?? {};\n  const item = {\n    ...sourceItem,\n    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,\n    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,\n    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,\n  };\n  const stepName = item.telemetry_step_name || 'unknown';\n  const stepType = item.telemetry_step_type || 'n8n-stage';\n  const sortOrder = Number(item.telemetry_step_sort_order ?? 0);\n  const startedAt = new Date().toISOString();\n  const inputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_started_at: startedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_params: [\n        item.telemetry?.run_id || item.run_id || '',\n        stepName,\n        stepType,\n        sortOrder,\n        startedAt,\n        payloadJson(inputJson),\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "d1158e66-44c9-5fc4-8793-de9107f412aa",
+      "name": "Telemetry record step: Build classification prompt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        530,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_steps (run_id, name, type, status, sort_order, started_at, input_json)\nSELECT NULLIF($1, '')::uuid, $2, $3, 'running', $4::int, $5::timestamptz, $6::jsonb\nWHERE NULLIF($1, '') IS NOT NULL\nRETURNING id AS step_id, $7::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "91c3821e-2f32-519e-90a8-77469c7f7648",
+      "name": "Telemetry restore step start: Build classification prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry start step: Build classification prompt').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n      telemetry_step_id: result.step_id || result.telemetry_step_id || restored.telemetry_step_id || '',\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "029423a1-2832-55f6-bb9b-7bef082c8a22",
+      "name": "Telemetry finish step: Build classification prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    step_id: item.telemetry_step_id || item.step_id || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n    total_emails: item.total_emails || 0,\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const item = inputItem.json ?? {};\n  const stoppedAt = new Date().toISOString();\n  const status = item.error ? 'error' : 'success';\n  const errorJson = item.error\n    ? payloadJson({ message: truncate(item.error.message || item.error) })\n    : null;\n  const outputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_stopped_at: stoppedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_finish_params: [\n        item.telemetry_step_id || item.step_id || '',\n        status,\n        stoppedAt,\n        payloadJson(outputJson),\n        errorJson,\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "20f635b5-890d-52b7-bc28-8ce63762f4f3",
+      "name": "Telemetry update step: Build classification prompt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        950,
+        120
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\n  UPDATE workflow_steps\n  SET\n    status = $2,\n    stopped_at = $3::timestamptz,\n    duration_ms = (extract(epoch from ($3::timestamptz - started_at)) * 1000)::int,\n    output_json = $4::jsonb,\n    error_json = CASE WHEN $5 IS NULL OR $5 = '' THEN NULL ELSE $5::jsonb END\n  WHERE id = NULLIF($1, '')::uuid\n  RETURNING id\n)\nSELECT $6::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_finish_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "a46980ef-d42b-5de5-9741-587259a55e99",
+      "name": "Telemetry restore step finish: Build classification prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry finish step: Build classification prompt').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "f3b78a4f-ed31-5bfa-9629-7d6c2baa15c0",
+      "name": "Telemetry start step: Classify with Ollama",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        590,
+        -100
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const TELEMETRY_STEP_NAME = \"Classify with Ollama\";\nconst TELEMETRY_STEP_TYPE = 'n8n-stage';\nconst TELEMETRY_STEP_SORT_ORDER = 60;\n\nfunction payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    run_key: telemetry.run_key || item.run_key || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const sourceItem = inputItem.json ?? {};\n  const item = {\n    ...sourceItem,\n    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,\n    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,\n    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,\n  };\n  const stepName = item.telemetry_step_name || 'unknown';\n  const stepType = item.telemetry_step_type || 'n8n-stage';\n  const sortOrder = Number(item.telemetry_step_sort_order ?? 0);\n  const startedAt = new Date().toISOString();\n  const inputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_started_at: startedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_params: [\n        item.telemetry?.run_id || item.run_id || '',\n        stepName,\n        stepType,\n        sortOrder,\n        startedAt,\n        payloadJson(inputJson),\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "2973cd06-4e1e-5116-b4e2-d60e200f6c05",
+      "name": "Telemetry record step: Classify with Ollama",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        800,
+        -100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_steps (run_id, name, type, status, sort_order, started_at, input_json)\nSELECT NULLIF($1, '')::uuid, $2, $3, 'running', $4::int, $5::timestamptz, $6::jsonb\nWHERE NULLIF($1, '') IS NOT NULL\nRETURNING id AS step_id, $7::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "37f3ec8d-125d-5264-9997-9f342443c7c8",
+      "name": "Telemetry restore step start: Classify with Ollama",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1010,
+        -100
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry start step: Classify with Ollama').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n      telemetry_step_id: result.step_id || result.telemetry_step_id || restored.telemetry_step_id || '',\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "71bbc69f-2aba-5e14-9bff-b52437053d33",
+      "name": "Telemetry finish step: Classify with Ollama",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1010,
+        20
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    step_id: item.telemetry_step_id || item.step_id || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n    total_emails: item.total_emails || 0,\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const item = inputItem.json ?? {};\n  const stoppedAt = new Date().toISOString();\n  const status = item.error ? 'error' : 'success';\n  const errorJson = item.error\n    ? payloadJson({ message: truncate(item.error.message || item.error) })\n    : null;\n  const outputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_stopped_at: stoppedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_finish_params: [\n        item.telemetry_step_id || item.step_id || '',\n        status,\n        stoppedAt,\n        payloadJson(outputJson),\n        errorJson,\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "3bbc3214-9df9-58da-8314-7b15cbb3f463",
+      "name": "Telemetry update step: Classify with Ollama",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1220,
+        20
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\n  UPDATE workflow_steps\n  SET\n    status = $2,\n    stopped_at = $3::timestamptz,\n    duration_ms = (extract(epoch from ($3::timestamptz - started_at)) * 1000)::int,\n    output_json = $4::jsonb,\n    error_json = CASE WHEN $5 IS NULL OR $5 = '' THEN NULL ELSE $5::jsonb END\n  WHERE id = NULLIF($1, '')::uuid\n  RETURNING id\n)\nSELECT $6::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_finish_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "cf36f1c7-258d-59da-9043-e68386390e61",
+      "name": "Telemetry restore step finish: Classify with Ollama",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1430,
+        20
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry finish step: Classify with Ollama').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "5e1cfba5-73ff-5a74-94dd-1262b00a36ee",
+      "name": "Telemetry start step: Prepare Proton label targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        -200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const TELEMETRY_STEP_NAME = \"Prepare Proton label targets\";\nconst TELEMETRY_STEP_TYPE = 'n8n-stage';\nconst TELEMETRY_STEP_SORT_ORDER = 70;\n\nfunction payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    run_key: telemetry.run_key || item.run_key || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const sourceItem = inputItem.json ?? {};\n  const item = {\n    ...sourceItem,\n    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,\n    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,\n    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,\n  };\n  const stepName = item.telemetry_step_name || 'unknown';\n  const stepType = item.telemetry_step_type || 'n8n-stage';\n  const sortOrder = Number(item.telemetry_step_sort_order ?? 0);\n  const startedAt = new Date().toISOString();\n  const inputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_started_at: startedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_params: [\n        item.telemetry?.run_id || item.run_id || '',\n        stepName,\n        stepType,\n        sortOrder,\n        startedAt,\n        payloadJson(inputJson),\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "1f9bbd9d-e84b-54e4-8bc4-3cd29136bfa0",
+      "name": "Telemetry record step: Prepare Proton label targets",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1070,
+        -200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_steps (run_id, name, type, status, sort_order, started_at, input_json)\nSELECT NULLIF($1, '')::uuid, $2, $3, 'running', $4::int, $5::timestamptz, $6::jsonb\nWHERE NULLIF($1, '') IS NOT NULL\nRETURNING id AS step_id, $7::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "e6ab4e4d-1078-5c41-9d5e-c3627612913c",
+      "name": "Telemetry restore step start: Prepare Proton label targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        -200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry start step: Prepare Proton label targets').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n      telemetry_step_id: result.step_id || result.telemetry_step_id || restored.telemetry_step_id || '',\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "6ec5cd9a-db95-58b8-a0b9-28bde84e5c96",
+      "name": "Telemetry finish step: Prepare Proton label targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        -80
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    step_id: item.telemetry_step_id || item.step_id || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n    total_emails: item.total_emails || 0,\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const item = inputItem.json ?? {};\n  const stoppedAt = new Date().toISOString();\n  const status = item.error ? 'error' : 'success';\n  const errorJson = item.error\n    ? payloadJson({ message: truncate(item.error.message || item.error) })\n    : null;\n  const outputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_stopped_at: stoppedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_finish_params: [\n        item.telemetry_step_id || item.step_id || '',\n        status,\n        stoppedAt,\n        payloadJson(outputJson),\n        errorJson,\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "84d561f5-4803-5828-b289-c9f2425a7fdf",
+      "name": "Telemetry update step: Prepare Proton label targets",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1490,
+        -80
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\n  UPDATE workflow_steps\n  SET\n    status = $2,\n    stopped_at = $3::timestamptz,\n    duration_ms = (extract(epoch from ($3::timestamptz - started_at)) * 1000)::int,\n    output_json = $4::jsonb,\n    error_json = CASE WHEN $5 IS NULL OR $5 = '' THEN NULL ELSE $5::jsonb END\n  WHERE id = NULLIF($1, '')::uuid\n  RETURNING id\n)\nSELECT $6::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_finish_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "18c3cadd-e453-5075-9d90-a42b026569dd",
+      "name": "Telemetry restore step finish: Prepare Proton label targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        -80
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry finish step: Prepare Proton label targets').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "208b1e85-186b-56ae-9f46-0e55d7975db6",
+      "name": "Telemetry start step: Apply Proton labels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1390,
+        -400
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const TELEMETRY_STEP_NAME = \"Apply Proton labels\";\nconst TELEMETRY_STEP_TYPE = 'n8n-stage';\nconst TELEMETRY_STEP_SORT_ORDER = 80;\n\nfunction payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    run_key: telemetry.run_key || item.run_key || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const sourceItem = inputItem.json ?? {};\n  const item = {\n    ...sourceItem,\n    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,\n    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,\n    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,\n  };\n  const stepName = item.telemetry_step_name || 'unknown';\n  const stepType = item.telemetry_step_type || 'n8n-stage';\n  const sortOrder = Number(item.telemetry_step_sort_order ?? 0);\n  const startedAt = new Date().toISOString();\n  const inputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_started_at: startedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_params: [\n        item.telemetry?.run_id || item.run_id || '',\n        stepName,\n        stepType,\n        sortOrder,\n        startedAt,\n        payloadJson(inputJson),\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "72c7f04f-25f7-52db-9144-28f877ff992c",
+      "name": "Telemetry record step: Apply Proton labels",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1600,
+        -400
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_steps (run_id, name, type, status, sort_order, started_at, input_json)\nSELECT NULLIF($1, '')::uuid, $2, $3, 'running', $4::int, $5::timestamptz, $6::jsonb\nWHERE NULLIF($1, '') IS NOT NULL\nRETURNING id AS step_id, $7::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "8a7fcd92-408a-5547-9c54-8725fdc9ab41",
+      "name": "Telemetry restore step start: Apply Proton labels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1810,
+        -400
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry start step: Apply Proton labels').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n      telemetry_step_id: result.step_id || result.telemetry_step_id || restored.telemetry_step_id || '',\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "733e36ef-737a-51e9-8ebb-03ba3baf426e",
+      "name": "Telemetry finish step: Apply Proton labels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1810,
+        -280
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    step_id: item.telemetry_step_id || item.step_id || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n    total_emails: item.total_emails || 0,\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const item = inputItem.json ?? {};\n  const stoppedAt = new Date().toISOString();\n  const status = item.error ? 'error' : 'success';\n  const errorJson = item.error\n    ? payloadJson({ message: truncate(item.error.message || item.error) })\n    : null;\n  const outputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_stopped_at: stoppedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_finish_params: [\n        item.telemetry_step_id || item.step_id || '',\n        status,\n        stoppedAt,\n        payloadJson(outputJson),\n        errorJson,\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "fd42378b-57f9-5e19-81be-4ae65063edbe",
+      "name": "Telemetry update step: Apply Proton labels",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2020,
+        -280
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\n  UPDATE workflow_steps\n  SET\n    status = $2,\n    stopped_at = $3::timestamptz,\n    duration_ms = (extract(epoch from ($3::timestamptz - started_at)) * 1000)::int,\n    output_json = $4::jsonb,\n    error_json = CASE WHEN $5 IS NULL OR $5 = '' THEN NULL ELSE $5::jsonb END\n  WHERE id = NULLIF($1, '')::uuid\n  RETURNING id\n)\nSELECT $6::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_finish_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "f39a7dc7-ece5-5175-a9a1-ae6fc9d57873",
+      "name": "Telemetry restore step finish: Apply Proton labels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2230,
+        -280
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry finish step: Apply Proton labels').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "78551c64-0ef1-55a8-99df-7a7d35319c77",
+      "name": "Telemetry start step: Finish run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        -800
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const TELEMETRY_STEP_NAME = \"Finish run\";\nconst TELEMETRY_STEP_TYPE = 'n8n-stage';\nconst TELEMETRY_STEP_SORT_ORDER = 100;\n\nfunction payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    run_key: telemetry.run_key || item.run_key || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const sourceItem = inputItem.json ?? {};\n  const item = {\n    ...sourceItem,\n    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,\n    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,\n    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,\n  };\n  const stepName = item.telemetry_step_name || 'unknown';\n  const stepType = item.telemetry_step_type || 'n8n-stage';\n  const sortOrder = Number(item.telemetry_step_sort_order ?? 0);\n  const startedAt = new Date().toISOString();\n  const inputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_started_at: startedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_params: [\n        item.telemetry?.run_id || item.run_id || '',\n        stepName,\n        stepType,\n        sortOrder,\n        startedAt,\n        payloadJson(inputJson),\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "19a23861-214b-5768-b4d2-001948eb15ec",
+      "name": "Telemetry record step: Finish run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        230,
+        -800
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_steps (run_id, name, type, status, sort_order, started_at, input_json)\nSELECT NULLIF($1, '')::uuid, $2, $3, 'running', $4::int, $5::timestamptz, $6::jsonb\nWHERE NULLIF($1, '') IS NOT NULL\nRETURNING id AS step_id, $7::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "18d16c47-6c49-5578-bd78-5ae9f235fbe4",
+      "name": "Telemetry restore step start: Finish run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -800
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry start step: Finish run').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n      telemetry_step_id: result.step_id || result.telemetry_step_id || restored.telemetry_step_id || '',\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "8767d1f5-7f63-5c64-a2da-2e8c8822ce9b",
+      "name": "Telemetry finish step: Finish run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -680
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function payloadJson(value) {\n  return JSON.stringify(value ?? {});\n}\n\nfunction truncate(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);\n}\n\nconst SECRET_FIELDS = [\n  'password',\n  'api_key',\n  'N8N_API_KEY',\n  'DATABASE_URL',\n  'IMAP_PASSWORD',\n  'IMAP_1_PASSWORD',\n  'IMAP_2_PASSWORD',\n  'IMAP_3_PASSWORD',\n];\n\nfunction isSecretField(key) {\n  const normalized = String(key || '').toLowerCase();\n  return normalized === 'password'\n    || normalized === 'api_key'\n    || normalized === 'n8n_api_key'\n    || normalized.endsWith('_api_key')\n    || normalized === 'database_url'\n    || (normalized.startsWith('imap') && normalized.includes('password'));\n}\n\nfunction deleteSecretFields(payload) {\n  for (const key of SECRET_FIELDS) {\n    delete payload[key];\n  }\n  for (const key of Object.keys(payload)) {\n    if (isSecretField(key)) delete payload[key];\n  }\n  return payload;\n}\n\nfunction safeObject(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};\n  return value;\n}\n\nfunction sanitizeDebugValue(value) {\n  if (Array.isArray(value)) {\n    return value.slice(0, 20).map((entry) => sanitizeDebugValue(entry));\n  }\n  if (!value || typeof value !== 'object') return value ?? null;\n\n  const result = {};\n  for (const [key, entry] of Object.entries(value)) {\n    if (isSecretField(key) || key === 'email_body' || key === 'raw_content') continue;\n    result[key] = typeof entry === 'string' ? truncate(entry) : sanitizeDebugValue(entry);\n  }\n  return deleteSecretFields(result);\n}\n\nfunction sanitizeForStepTelemetry(item) {\n  const telemetry = safeObject(item.telemetry);\n  const classification = safeObject(item.classification);\n  const destinationActions = safeObject(item.destination_actions);\n  const payload = {\n    workflow_id: telemetry.workflow_id || item.workflow_id || '',\n    workflow_name: telemetry.workflow_name || item.workflow_name || '',\n    execution_id: telemetry.execution_id || item.execution_id || '',\n    run_id: telemetry.run_id || item.run_id || '',\n    step_id: item.telemetry_step_id || item.step_id || '',\n    sourceFlow: item.sourceFlow || '',\n    account_id: item.credentialPairId || item.account_id || '',\n    sourceMailbox: item.sourceMailbox || '',\n    uidvalidity: String(item.uidvalidity || ''),\n    uid: String(item.uid || ''),\n    message_id: item.message_id || '',\n    sender_email: item.sender_email || '',\n    recipient_email: item.recipient_email || item.recipient || '',\n    subject: item.email_subject || item.subject || '',\n    body_preview: truncate(item.body_preview || item.email_body || ''),\n    labels: sanitizeDebugValue(item.labels || classification.labels || item.classification_labels || []),\n    target_mailboxes: sanitizeDebugValue(item.targetMailboxes || item.destination_mailboxes || []),\n    model: item.model || item.ai_model || '',\n    destination_actions: sanitizeDebugValue(destinationActions),\n    total_emails: item.total_emails || 0,\n    status: item.status || item.action_status || '',\n    stopped_reason: item.stopped_reason || '',\n  };\n  return deleteSecretFields(payload);\n}\n\nreturn $input.all().map((inputItem, index) => {\n  const item = inputItem.json ?? {};\n  const stoppedAt = new Date().toISOString();\n  const status = item.error ? 'error' : 'success';\n  const errorJson = item.error\n    ? payloadJson({ message: truncate(item.error.message || item.error) })\n    : null;\n  const outputJson = sanitizeForStepTelemetry(item);\n\n  return {\n    json: {\n      ...item,\n      telemetry_step_stopped_at: stoppedAt,\n      telemetry_step_source_index: index,\n      telemetry_step_finish_params: [\n        item.telemetry_step_id || item.step_id || '',\n        status,\n        stoppedAt,\n        payloadJson(outputJson),\n        errorJson,\n        index,\n      ],\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
+    },
+    {
+      "id": "ab5cdfbc-c1c7-502c-94d7-34416f484b83",
+      "name": "Telemetry update step: Finish run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        650,
+        -680
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\n  UPDATE workflow_steps\n  SET\n    status = $2,\n    stopped_at = $3::timestamptz,\n    duration_ms = (extract(epoch from ($3::timestamptz - started_at)) * 1000)::int,\n    output_json = $4::jsonb,\n    error_json = CASE WHEN $5 IS NULL OR $5 = '' THEN NULL ELSE $5::jsonb END\n  WHERE id = NULLIF($1, '')::uuid\n  RETURNING id\n)\nSELECT $6::int AS source_index;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.telemetry_step_finish_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "wspg_a409ed51b8f18c5e",
+          "name": "Workflow Status Postgres"
+        }
+      }
+    },
+    {
+      "id": "3b965ad3-dad8-5ecf-867f-b857d08f3e1e",
+      "name": "Telemetry restore step finish: Finish run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        -680
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function sourceIndex(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;\n}\n\nreturn $input.all().map((inputItem) => {\n  const result = inputItem?.json ?? {};\n  const index = sourceIndex(result.source_index ?? result.sourceIndex ?? result.telemetry_step_source_index);\n  const sourceItems = $('Telemetry finish step: Finish run').all();\n  const restored = sourceItems[index]?.json ?? sourceItems[0]?.json ?? result;\n  return {\n    json: {\n      ...restored,\n    },\n    pairedItem: index,\n  };\n});\n"
+      }
     }
   ],
   "connections": {
@@ -940,7 +1588,7 @@
       "main": [
         [
           {
-            "node": "Stop if no fetched emails",
+            "node": "Telemetry finish step: Fetch next unclassified emails",
             "type": "main",
             "index": 0
           }
@@ -962,14 +1610,14 @@
       "main": [
         [
           {
-            "node": "Get next 50 unclassified emails",
+            "node": "Telemetry start step: Fetch next unclassified emails",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Build classification prompt",
+            "node": "Telemetry start step: Build classification prompt",
             "type": "main",
             "index": 0
           }
@@ -1002,7 +1650,7 @@
       "main": [
         [
           {
-            "node": "Classify with Ollama",
+            "node": "Telemetry finish step: Build classification prompt",
             "type": "main",
             "index": 0
           }
@@ -1024,7 +1672,7 @@
       "main": [
         [
           {
-            "node": "Telemetry build classification attempt",
+            "node": "Telemetry finish step: Classify with Ollama",
             "type": "main",
             "index": 0
           }
@@ -1035,7 +1683,7 @@
       "main": [
         [
           {
-            "node": "Inspect Proton label targets",
+            "node": "Telemetry finish step: Prepare Proton label targets",
             "type": "main",
             "index": 0
           }
@@ -1046,7 +1694,7 @@
       "main": [
         [
           {
-            "node": "Apply Proton labels",
+            "node": "Telemetry start step: Apply Proton labels",
             "type": "main",
             "index": 0
           }
@@ -1064,7 +1712,7 @@
       "main": [
         [
           {
-            "node": "Telemetry build label actions",
+            "node": "Telemetry finish step: Apply Proton labels",
             "type": "main",
             "index": 0
           }
@@ -1119,7 +1767,7 @@
       "main": [
         [
           {
-            "node": "Get next 50 unclassified emails",
+            "node": "Telemetry start step: Fetch next unclassified emails",
             "type": "main",
             "index": 0
           }
@@ -1137,7 +1785,7 @@
         ],
         [
           {
-            "node": "Telemetry finish run",
+            "node": "Telemetry start step: Finish run",
             "type": "main",
             "index": 0
           }
@@ -1181,7 +1829,7 @@
       "main": [
         [
           {
-            "node": "Telemetry update finished run",
+            "node": "Telemetry finish step: Finish run",
             "type": "main",
             "index": 0
           }
@@ -1247,7 +1895,7 @@
       "main": [
         [
           {
-            "node": "Build classification prompt",
+            "node": "Telemetry start step: Build classification prompt",
             "type": "main",
             "index": 0
           }
@@ -1280,7 +1928,7 @@
       "main": [
         [
           {
-            "node": "Prepare Proton label targets",
+            "node": "Telemetry start step: Prepare Proton label targets",
             "type": "main",
             "index": 0
           }
@@ -1369,6 +2017,402 @@
         [
           {
             "node": "Telemetry update finished run (trigger)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry start step: Fetch next unclassified emails": {
+      "main": [
+        [
+          {
+            "node": "Telemetry record step: Fetch next unclassified emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry record step: Fetch next unclassified emails": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step start: Fetch next unclassified emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step start: Fetch next unclassified emails": {
+      "main": [
+        [
+          {
+            "node": "Get next 50 unclassified emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry finish step: Fetch next unclassified emails": {
+      "main": [
+        [
+          {
+            "node": "Telemetry update step: Fetch next unclassified emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry update step: Fetch next unclassified emails": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step finish: Fetch next unclassified emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step finish: Fetch next unclassified emails": {
+      "main": [
+        [
+          {
+            "node": "Stop if no fetched emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry start step: Build classification prompt": {
+      "main": [
+        [
+          {
+            "node": "Telemetry record step: Build classification prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry record step: Build classification prompt": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step start: Build classification prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step start: Build classification prompt": {
+      "main": [
+        [
+          {
+            "node": "Build classification prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry finish step: Build classification prompt": {
+      "main": [
+        [
+          {
+            "node": "Telemetry update step: Build classification prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry update step: Build classification prompt": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step finish: Build classification prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step finish: Build classification prompt": {
+      "main": [
+        [
+          {
+            "node": "Telemetry start step: Classify with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry start step: Classify with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Telemetry record step: Classify with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry record step: Classify with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step start: Classify with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step start: Classify with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Classify with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry finish step: Classify with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Telemetry update step: Classify with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry update step: Classify with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step finish: Classify with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step finish: Classify with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Telemetry build classification attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry start step: Prepare Proton label targets": {
+      "main": [
+        [
+          {
+            "node": "Telemetry record step: Prepare Proton label targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry record step: Prepare Proton label targets": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step start: Prepare Proton label targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step start: Prepare Proton label targets": {
+      "main": [
+        [
+          {
+            "node": "Prepare Proton label targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry finish step: Prepare Proton label targets": {
+      "main": [
+        [
+          {
+            "node": "Telemetry update step: Prepare Proton label targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry update step: Prepare Proton label targets": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step finish: Prepare Proton label targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step finish: Prepare Proton label targets": {
+      "main": [
+        [
+          {
+            "node": "Inspect Proton label targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry start step: Apply Proton labels": {
+      "main": [
+        [
+          {
+            "node": "Telemetry record step: Apply Proton labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry record step: Apply Proton labels": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step start: Apply Proton labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step start: Apply Proton labels": {
+      "main": [
+        [
+          {
+            "node": "Apply Proton labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry finish step: Apply Proton labels": {
+      "main": [
+        [
+          {
+            "node": "Telemetry update step: Apply Proton labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry update step: Apply Proton labels": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step finish: Apply Proton labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step finish: Apply Proton labels": {
+      "main": [
+        [
+          {
+            "node": "Telemetry build label actions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry start step: Finish run": {
+      "main": [
+        [
+          {
+            "node": "Telemetry record step: Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry record step: Finish run": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step start: Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step start: Finish run": {
+      "main": [
+        [
+          {
+            "node": "Telemetry finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry finish step: Finish run": {
+      "main": [
+        [
+          {
+            "node": "Telemetry update step: Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry update step: Finish run": {
+      "main": [
+        [
+          {
+            "node": "Telemetry restore step finish: Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry restore step finish: Finish run": {
+      "main": [
+        [
+          {
+            "node": "Telemetry update finished run",
             "type": "main",
             "index": 0
           }

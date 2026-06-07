@@ -29,6 +29,15 @@ NODE_CODE = {
     "Telemetry finish run (trigger)": "telemetry_finish_run.js",
 }
 
+STEP_STAGE_SORT_ORDERS = {
+    "Fetch next unclassified emails": 30,
+    "Build classification prompt": 50,
+    "Classify with Ollama": 60,
+    "Prepare Proton label targets": 70,
+    "Apply Proton labels": 80,
+    "Finish run": 100,
+}
+
 
 def code_file_for_node(name: str) -> str | None:
     if name.startswith("Telemetry start step: "):
@@ -38,14 +47,44 @@ def code_file_for_node(name: str) -> str | None:
     return NODE_CODE.get(name)
 
 
+def code_with_step_defaults(name: str, code: str) -> str:
+    prefix = "Telemetry start step: "
+    if not name.startswith(prefix):
+        return code
+
+    stage = name.removeprefix(prefix)
+    sort_order = STEP_STAGE_SORT_ORDERS.get(stage)
+    if sort_order is None:
+        return code
+
+    source_line = "  const item = inputItem.json ?? {};"
+    replacement = """  const sourceItem = inputItem.json ?? {};
+  const item = {
+    ...sourceItem,
+    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,
+    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,
+    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,
+  };"""
+    if source_line not in code:
+        raise ValueError("telemetry_start_step.js shape changed; cannot inject stage defaults")
+
+    return (
+        f"const TELEMETRY_STEP_NAME = {json.dumps(stage)};\n"
+        "const TELEMETRY_STEP_TYPE = 'n8n-stage';\n"
+        f"const TELEMETRY_STEP_SORT_ORDER = {sort_order};\n\n"
+        + code.replace(source_line, replacement)
+    )
+
+
 def sync(path: Path) -> None:
     workflow = json.loads(path.read_text(encoding="utf-8"))
     for node in workflow["nodes"]:
         filename = code_file_for_node(node["name"])
         if filename:
-            node["parameters"]["jsCode"] = (ROOT / "code-nodes" / filename).read_text(
+            code = (ROOT / "code-nodes" / filename).read_text(
                 encoding="utf-8",
             )
+            node["parameters"]["jsCode"] = code_with_step_defaults(node["name"], code)
     path.write_text(json.dumps(workflow, indent=2) + "\n", encoding="utf-8")
 
 
