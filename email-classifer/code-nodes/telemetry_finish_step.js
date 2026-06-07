@@ -8,6 +8,7 @@ function truncate(value) {
 
 const SECRET_FIELDS = [
   'password',
+  'api_key',
   'N8N_API_KEY',
   'DATABASE_URL',
   'IMAP_PASSWORD',
@@ -19,7 +20,9 @@ const SECRET_FIELDS = [
 function isSecretField(key) {
   const normalized = String(key || '').toLowerCase();
   return normalized === 'password'
+    || normalized === 'api_key'
     || normalized === 'n8n_api_key'
+    || normalized.endsWith('_api_key')
     || normalized === 'database_url'
     || (normalized.startsWith('imap') && normalized.includes('password'));
 }
@@ -84,25 +87,29 @@ function sanitizeForStepTelemetry(item) {
   return deleteSecretFields(payload);
 }
 
-const item = $input.first()?.json ?? {};
-const stoppedAt = new Date().toISOString();
-const status = item.error ? 'error' : 'success';
-const errorJson = item.error
-  ? payloadJson({ message: truncate(item.error.message || item.error) })
-  : null;
-const outputJson = sanitizeForStepTelemetry(item);
+return $input.all().map((inputItem, index) => {
+  const item = inputItem.json ?? {};
+  const stoppedAt = new Date().toISOString();
+  const status = item.error ? 'error' : 'success';
+  const errorJson = item.error
+    ? payloadJson({ message: truncate(item.error.message || item.error) })
+    : null;
+  const outputJson = sanitizeForStepTelemetry(item);
 
-return [{
-  json: {
-    ...item,
-    telemetry_step_stopped_at: stoppedAt,
-    telemetry_step_finish_params: [
-      item.telemetry_step_id || item.step_id || '',
-      status,
-      stoppedAt,
-      payloadJson(outputJson),
-      errorJson,
-      payloadJson(item),
-    ],
-  },
-}];
+  return {
+    json: {
+      ...item,
+      telemetry_step_stopped_at: stoppedAt,
+      telemetry_step_source_index: index,
+      telemetry_step_finish_params: [
+        item.telemetry_step_id || item.step_id || '',
+        status,
+        stoppedAt,
+        payloadJson(outputJson),
+        errorJson,
+        index,
+      ],
+    },
+    pairedItem: index,
+  };
+});

@@ -8,6 +8,7 @@ function truncate(value) {
 
 const SECRET_FIELDS = [
   'password',
+  'api_key',
   'N8N_API_KEY',
   'DATABASE_URL',
   'IMAP_PASSWORD',
@@ -19,7 +20,9 @@ const SECRET_FIELDS = [
 function isSecretField(key) {
   const normalized = String(key || '').toLowerCase();
   return normalized === 'password'
+    || normalized === 'api_key'
     || normalized === 'n8n_api_key'
+    || normalized.endsWith('_api_key')
     || normalized === 'database_url'
     || (normalized.startsWith('imap') && normalized.includes('password'));
 }
@@ -83,25 +86,29 @@ function sanitizeForStepTelemetry(item) {
   return deleteSecretFields(payload);
 }
 
-const item = $input.first()?.json ?? {};
-const stepName = item.telemetry_step_name || $json.telemetry_step_name || 'unknown';
-const stepType = item.telemetry_step_type || $json.telemetry_step_type || 'n8n-stage';
-const sortOrder = Number(item.telemetry_step_sort_order ?? $json.telemetry_step_sort_order ?? 0);
-const startedAt = new Date().toISOString();
-const inputJson = sanitizeForStepTelemetry(item);
+return $input.all().map((inputItem, index) => {
+  const item = inputItem.json ?? {};
+  const stepName = item.telemetry_step_name || 'unknown';
+  const stepType = item.telemetry_step_type || 'n8n-stage';
+  const sortOrder = Number(item.telemetry_step_sort_order ?? 0);
+  const startedAt = new Date().toISOString();
+  const inputJson = sanitizeForStepTelemetry(item);
 
-return [{
-  json: {
-    ...item,
-    telemetry_step_started_at: startedAt,
-    telemetry_step_params: [
-      item.telemetry?.run_id || item.run_id || '',
-      stepName,
-      stepType,
-      sortOrder,
-      startedAt,
-      payloadJson(inputJson),
-      payloadJson(item),
-    ],
-  },
-}];
+  return {
+    json: {
+      ...item,
+      telemetry_step_started_at: startedAt,
+      telemetry_step_source_index: index,
+      telemetry_step_params: [
+        item.telemetry?.run_id || item.run_id || '',
+        stepName,
+        stepType,
+        sortOrder,
+        startedAt,
+        payloadJson(inputJson),
+        index,
+      ],
+    },
+    pairedItem: index,
+  };
+});

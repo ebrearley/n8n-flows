@@ -29,6 +29,39 @@ class WorkflowJsonTests(unittest.TestCase):
             for assignment in node["parameters"]["assignments"]["assignments"]
         }
 
+    def run_step_telemetry_helper(self, filename, input_items):
+        script = f"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {{}}).constructor;
+const inputJson = JSON.parse(fs.readFileSync(0, 'utf8'));
+const code = fs.readFileSync('code-nodes/{filename}', 'utf8');
+const inputItems = inputJson.map((json) => ({{ json }}));
+const $input = {{
+  all: () => inputItems,
+  first: () => inputItems[0],
+}};
+
+(async () => {{
+  const result = await new AsyncFunction('$input', '$json', code)(
+    $input,
+    inputItems[0]?.json ?? {{}},
+  );
+  console.log(JSON.stringify(result));
+}})().catch((error) => {{
+  console.error(error);
+  process.exit(1);
+}});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            input=json.dumps(input_items),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
     def test_imap_action_nodes_are_javascript_code_nodes(self):
         nodes = self.nodes_by_name()
 
@@ -298,9 +331,84 @@ const json = {
             self.assertIn("slice(0, 500)", code)
             self.assertIn("password", code)
             self.assertIn("N8N_API_KEY", code)
-            self.assertIn("payloadJson(item)", code)
             self.assertNotIn("raw_content", code)
             self.assertNotIn("email_body: item.email_body", code)
+
+        input_items = [
+            {
+                "uid": "1",
+                "telemetry": {"run_id": "11111111-1111-1111-1111-111111111111"},
+                "telemetry_step_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "telemetry_step_name": "Stage one",
+                "telemetry_step_type": "n8n-stage",
+                "telemetry_step_sort_order": 10,
+                "email_body": "first body",
+            },
+            {
+                "uid": "2",
+                "telemetry": {"run_id": "22222222-2222-2222-2222-222222222222"},
+                "telemetry_step_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "telemetry_step_name": "Stage two",
+                "telemetry_step_type": "n8n-stage",
+                "telemetry_step_sort_order": 20,
+                "email_body": "second body",
+            },
+        ]
+
+        start_result = self.run_step_telemetry_helper("telemetry_start_step.js", input_items)
+        finish_result = self.run_step_telemetry_helper("telemetry_finish_step.js", input_items)
+
+        for result, params_name in (
+            (start_result, "telemetry_step_params"),
+            (finish_result, "telemetry_step_finish_params"),
+        ):
+            self.assertEqual(len(result), 2)
+            for index, output_item in enumerate(result):
+                self.assertEqual(output_item["pairedItem"], index)
+                self.assertEqual(output_item["json"]["uid"], input_items[index]["uid"])
+                self.assertEqual(output_item["json"]["telemetry_step_source_index"], index)
+                self.assertEqual(output_item["json"][params_name][-1], index)
+
+        full_body = "x" * 700
+        malicious_items = [
+            {
+                "uid": "9",
+                "telemetry": {"run_id": "99999999-9999-9999-9999-999999999999"},
+                "telemetry_step_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "telemetry_step_name": "Sensitive stage",
+                "telemetry_step_type": "n8n-stage",
+                "telemetry_step_sort_order": 90,
+                "email_body": full_body,
+                "raw_content": "raw-secret-value",
+                "IMAP_1_PASSWORD": "imap-secret-value",
+                "api_key": "api-secret-value",
+                "destination_actions": {"Inbox": {"api_key": "nested-api-secret"}},
+            }
+        ]
+        sensitive_values = (
+            full_body,
+            "raw-secret-value",
+            "imap-secret-value",
+            "api-secret-value",
+            "nested-api-secret",
+        )
+
+        for filename, params_name, json_param_index in (
+            ("telemetry_start_step.js", "telemetry_step_params", 5),
+            ("telemetry_finish_step.js", "telemetry_step_finish_params", 3),
+        ):
+            result = self.run_step_telemetry_helper(filename, malicious_items)
+            params = result[0]["json"][params_name]
+            params_text = json.dumps(params)
+            sanitized_json = json.loads(params[json_param_index])
+
+            self.assertEqual(params[-1], 0)
+            self.assertEqual(sanitized_json["body_preview"], "x" * 500)
+            for value in sensitive_values:
+                self.assertNotIn(value, params_text)
+
+        for code in (start_code, finish_code):
+            self.assertNotIn("payloadJson(item)", code)
 
     def test_telemetry_postgres_nodes_stop_on_error_during_setup(self):
         for node in self.load_workflow()["nodes"]:
