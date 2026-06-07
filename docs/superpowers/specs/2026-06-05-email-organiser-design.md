@@ -5,9 +5,9 @@ Workflow: `Email Organiser` (`fm6pLPnZWsGfK1oH`)
 
 ## Current Revision
 
-`Email Organiser` is an inactive n8n workflow with two entry points:
+`Email Organiser` is an active, published n8n workflow with two entry points:
 
-- a manual bulk pass that fetches up to 50 unclassified IMAP emails at a time and loops over them one by one; during setup `maxBatches=1` bounds each manual run to one batch;
+- a manual bulk pass that fetches up to 50 unclassified IMAP emails at a time, loops over them one by one, and repeats until no unclassified emails remain;
 - an `Email Trigger (IMAP)` path that classifies one newly received email.
 
 Both paths use a visible n8n AI Agent node, `Classify with Ollama`, backed by an `Ollama Chat Model` node configured for `gemma4-26b:4090` at `http://192.168.1.100:11434`.
@@ -20,6 +20,8 @@ Examples:
 
 - `Labels/Invoice`
 - `Labels/Hustle`
+- `Labels/Schedule`
+- `Labels/Spam like`
 - `Labels/Classified`
 
 `Labels/Classified` is the state marker used to avoid reprocessing already classified emails.
@@ -31,10 +33,10 @@ The workflow must not create labels, create folders, move source messages, delet
 Manual bulk pass:
 
 1. `Manual Trigger` starts the pass from n8n.
-2. `Configure Proton IMAP batch` sets `imapPairsJson`, `batchLimit=50`, `maxBatches=1`, and fallback IMAP defaults.
+2. `Configure Proton IMAP batch` sets `imapPairsJson`, `batchLimit=50`, `maxBatches=0`, `rawFetchByteLimit=65536`, `fetchWatchdogMs=120000`, `uidSearchWindow=500`, and fallback IMAP defaults.
 3. `Get next 50 unclassified emails` runs JavaScript in an n8n Code node.
 4. The Code node iterates credential pairs, reading each pair's `userVar` and `passwordVar` from n8n variables first, then environment variables.
-5. The Code node scans each pair's `sourceMailboxes`, skips messages already present in that account's `Labels/Classified` by `Message-ID`, and returns up to 50 email items.
+5. The Code node scans each pair's `sourceMailboxes` by bounded UID ranges, skips messages already present in that account's `Labels/Classified` using per-candidate `Message-ID` checks, fetches only selected headers and bounded body previews, and returns up to 50 email items. A fetch watchdog stops the node with stage counters if the first batch cannot be prepared in time.
 6. `Stop if no fetched emails` returns no items when the fetch result is empty, including when `maxBatches` has been reached.
 7. `Expand fetched emails` turns the script JSON into one n8n item per email.
 8. `Loop Over Emails` processes one email at a time.
@@ -43,7 +45,7 @@ Manual bulk pass:
 11. `Prepare Proton label targets` parses raw or fenced JSON, validates labels, drops unknown/low-confidence labels, maps accepted labels to `Labels/<label>`, and always adds `Labels/Classified`.
 12. `From bulk loop?` routes bulk items to `Apply Proton labels`.
 13. `Apply Proton labels` uses the email item's `credentialPair` to reconnect to the original account, `UID COPY` the message into each `Labels/<label>` mailbox, and loop back to `Loop Over Emails`.
-14. When the 50-item batch is done, the loop's done output runs `Get next 50 unclassified emails` again. With `maxBatches=1`, this stops the current setup run; set `maxBatches=0` later to repeat until no unclassified emails remain.
+14. When the 50-item batch is done, the loop's done output runs `Get next 50 unclassified emails` again. With `maxBatches=0`, this repeats until no unclassified emails remain; set `maxBatches` to a positive number only for deliberately capped test runs.
 
 Live trigger:
 
@@ -79,7 +81,7 @@ All destination labels must already exist under Proton's `Labels` mailbox, inclu
 
 `uncertain` is a classifier fallback, not a Proton label target. If no confident label is accepted, the workflow applies only `Labels/Classified` so the message is not retried forever.
 
-The workflow is currently inactive and must not be executed or activated until the required labels and runtime environment are ready.
+The workflow is active and should only remain active once the required labels and runtime environment are ready.
 
 While the workflow is being set up, model retries are disabled so errors stop the execution and remain visible in n8n.
 

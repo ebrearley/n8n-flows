@@ -67,7 +67,9 @@ The live `Email Trigger (IMAP)` node uses the credential assigned in n8n.
 
 The bulk fetch and label-application Code nodes cannot read the `Email Trigger (IMAP)` credential secrets directly, so each IMAP account is configured as an entry in `imapPairsJson` on `Configure Proton IMAP batch`.
 
-During setup, `Configure Proton IMAP batch` sets `maxBatches=1` so one manual execution processes at most one 50-email batch. Set `maxBatches=0` only when you are ready for the manual workflow to keep fetching batches until the inbox is classified.
+`Configure Proton IMAP batch` sets `maxBatches=0`, so the manual workflow keeps fetching 50-email batches until the inbox is classified. Set `maxBatches` to a positive number only when you want a deliberately capped test run.
+
+The bulk fetch node reads only selected IMAP header fields and caps each raw message preview at `rawFetchByteLimit` bytes, defaulting to `65536`. It scans source mailboxes in bounded UID ranges using `uidSearchWindow=500`, and checks candidate Message-IDs against `Labels/Classified` only as needed. `fetchWatchdogMs` defaults to `120000` and stops the fetch with stage counters if the first batch cannot be prepared in time.
 
 Each credential pair names the variables that hold its username and password:
 
@@ -84,7 +86,10 @@ Each credential pair names the variables that hold its username and password:
     "passwordVar": "IMAP_1_PASSWORD",
     "sourceMailboxes": ["INBOX"],
     "labelPrefix": "Labels",
-    "stateLabel": "Classified"
+    "stateLabel": "Classified",
+    "rawFetchByteLimit": 65536,
+    "fetchWatchdogMs": 120000,
+    "uidSearchWindow": 500
   }
 ]
 ```
@@ -150,6 +155,8 @@ Default labels:
 - `Ticket`
 - `Infrastructure`
 - `Hustle`
+- `Schedule`
+- `Spam like`
 
 ## Local Tests
 

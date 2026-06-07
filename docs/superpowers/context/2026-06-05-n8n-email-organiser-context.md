@@ -8,7 +8,9 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 `Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, raw JSON parsing in Proton label target preparation, an empty-batch stop guard, and separate JavaScript Code-node apply paths for bulk and trigger processing.
 
-The saved n8n workflow is not active and is not published. During setup, `Configure Proton IMAP batch` sets `maxBatches=1` so a manual execution processes at most one 50-email batch and then stops. Set `maxBatches=0` later to allow full-inbox backfill.
+The saved n8n workflow is active and published. `Configure Proton IMAP batch` sets `maxBatches=0` so a manual execution keeps fetching 50-email batches until no unclassified emails remain.
+
+The bulk fetch path avoids full mailbox and classified-message preloads. It scans source mailboxes by bounded UID ranges (`uidSearchWindow=500`), verifies candidate `Message-ID`s against `Labels/Classified` as needed, requests only selected IMAP header fields, and caps each raw email preview at `rawFetchByteLimit=65536` bytes. `fetchWatchdogMs=120000` stops the first batch fetch with stage counters if it stalls.
 
 ## Proton IMAP Target
 
@@ -106,5 +108,8 @@ No `enabled_tools` allow-list is configured, so Codex should expose all tools ad
 - Replace placeholder values for `IMAP_1_USER`, `IMAP_1_PASSWORD`, `IMAP_2_USER`, and `IMAP_2_PASSWORD`; update host/port variables if either endpoint differs; add more pairs and variables if needed.
 - If using Coolify runtime env vars rather than n8n variables, explicitly approve `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
 - Confirm all Proton labels exist under `Labels`, including `Labels/Classified`.
-- Keep `maxBatches=1` while validating; set it to `0` only when ready for a full manual classification run.
+- Keep `maxBatches=0` for full manual backfill; set it to a positive number only for deliberately capped test runs.
+- Keep `rawFetchByteLimit=65536` unless larger email body previews are needed for classification.
+- Keep `fetchWatchdogMs=120000` while setup is being debugged so slow IMAP fetch stages fail visibly.
+- Keep `uidSearchWindow=500` unless the IMAP source range scans need tuning.
 - Configure production queue/concurrency to `1` before activating the workflow.
