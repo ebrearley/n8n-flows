@@ -227,10 +227,12 @@ const json = {
     def test_bulk_fetch_has_visible_stop_guard_for_empty_batches(self):
         nodes = self.nodes_by_name()
         self.assertIn("Stop if no fetched emails", nodes)
+        self.assertIn("Fetched emails?", nodes)
 
         guard_code = nodes["Stop if no fetched emails"]["parameters"]["jsCode"]
         self.assertIn("total_emails", guard_code)
-        self.assertIn("return []", guard_code)
+        self.assertIn("has_fetched_emails", guard_code)
+        self.assertNotIn("return []", guard_code)
 
         workflow = self.load_workflow()
         self.assertEqual(
@@ -239,7 +241,15 @@ const json = {
         )
         self.assertEqual(
             workflow["connections"]["Stop if no fetched emails"]["main"][0][0]["node"],
+            "Fetched emails?",
+        )
+        self.assertEqual(
+            workflow["connections"]["Fetched emails?"]["main"][0][0]["node"],
             "Expand fetched emails",
+        )
+        self.assertEqual(
+            workflow["connections"]["Fetched emails?"]["main"][1][0]["node"],
+            "Telemetry finish run",
         )
 
     def test_tls_servername_is_not_set_for_ip_hosts(self):
@@ -259,6 +269,156 @@ const json = {
         self.assertIn("$json.sender_email", value)
         self.assertIn("$json.email_body", value)
         self.assertNotIn("{{ $json.sender_email }}", value)
+
+    def test_telemetry_uses_postgres_nodes_not_execute_command(self):
+        workflow = self.load_workflow()
+        telemetry_nodes = [
+            node for node in workflow["nodes"] if node["name"].startswith("Telemetry ")
+        ]
+
+        self.assertGreaterEqual(len(telemetry_nodes), 8)
+        self.assertTrue(
+            any(node["type"] == "n8n-nodes-base.postgres" for node in telemetry_nodes),
+        )
+        self.assertFalse(
+            any(node["type"] == "n8n-nodes-base.executeCommand" for node in telemetry_nodes),
+        )
+
+    def test_telemetry_postgres_nodes_stop_on_error_during_setup(self):
+        for node in self.load_workflow()["nodes"]:
+            if node["name"].startswith("Telemetry ") and node["type"] == "n8n-nodes-base.postgres":
+                self.assertFalse(node.get("continueOnFail", False))
+                self.assertEqual(
+                    node["credentials"]["postgres"]["name"],
+                    "Workflow Status Postgres",
+                )
+
+    def test_telemetry_records_ai_model_tokens_and_label_actions(self):
+        workflow = self.load_workflow()
+        text = json.dumps(workflow)
+
+        self.assertIn("classification_attempts", text)
+        self.assertIn("label_actions", text)
+        self.assertIn("estimated_prompt_tokens", text)
+        self.assertIn("odytrice/gemma4-26b:4090", text)
+
+    def test_telemetry_preserves_payload_after_postgres_writes(self):
+        workflow = self.load_workflow()
+        nodes = self.nodes_by_name()
+        text = json.dumps(workflow)
+
+        self.assertIn("payload_json", text)
+        self.assertIn("telemetry_payload_json", text)
+        self.assertIn("jsonb_set", text)
+        self.assertIn("Telemetry restore start payload", nodes)
+        self.assertIn("Telemetry restore email item payload", nodes)
+        self.assertIn("Telemetry restore classification payload", nodes)
+        self.assertIn("Telemetry restore label action payload", nodes)
+
+    def test_telemetry_is_wired_into_bulk_and_trigger_paths(self):
+        workflow = self.load_workflow()
+        connections = workflow["connections"]
+
+        self.assertEqual(
+            connections["Configure Proton IMAP batch"]["main"][0][0]["node"],
+            "Telemetry start run",
+        )
+        self.assertEqual(
+            connections["Telemetry restore start payload"]["main"][0][0]["node"],
+            "Get next 50 unclassified emails",
+        )
+        self.assertEqual(
+            connections["Normalize trigger email"]["main"][0][0]["node"],
+            "Telemetry start run (trigger)",
+        )
+        self.assertEqual(
+            connections["Telemetry restore email item payload (trigger)"]["main"][0][0]["node"],
+            "Build classification prompt",
+        )
+        self.assertEqual(
+            connections["Classify with Ollama"]["main"][0][0]["node"],
+            "Telemetry build classification attempt",
+        )
+        self.assertEqual(
+            connections["Telemetry restore classification payload"]["main"][0][0]["node"],
+            "Prepare Proton label targets",
+        )
+        self.assertEqual(
+            connections["Telemetry restore label action payload"]["main"][0][0]["node"],
+            "Loop Over Emails",
+        )
+        self.assertEqual(
+            connections["Telemetry restore label action payload (trigger)"]["main"][0][0]["node"],
+            "Telemetry finish run (trigger)",
+        )
+
+    def test_fetch_carries_telemetry_and_batch_config_across_loop(self):
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        self.assertIn("telemetry: defaults.telemetry", code)
+        self.assertIn("imapPairsJson: inputConfig.imapPairsJson", code)
+        self.assertIn("fetchWatchdogMs: defaults.fetchWatchdogMs", code)
+
+    def test_telemetry_email_builder_preserves_multiple_expanded_items(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const code = fs.readFileSync('code-nodes/telemetry_build_email_items.js', 'utf8');
+const items = ['1', '2', '3'].map((uid) => ({
+  json: {
+    uid,
+    message_id: `<${uid}@example.test>`,
+    credentialPairId: 'imap-1',
+    sourceMailbox: 'INBOX',
+    sender_email: 'sender@example.test',
+    recipient_email: 'recipient@example.test',
+    email_subject: `Subject ${uid}`,
+    email_body: `Body ${uid}`,
+    telemetry: { run_key: 'run-1' },
+  },
+}));
+const $input = {
+  all: () => items,
+  first: () => items[0],
+};
+
+(async () => {
+  const result = await new AsyncFunction('$input', code)($input);
+  console.log(JSON.stringify(result.map((item) => item.json.uid)));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(json.loads(completed.stdout), ["1", "2", "3"])
+
+    def test_compatibility_export_has_same_telemetry_nodes(self):
+        workflow = self.load_workflow()
+        trigger_export = json.loads(
+            (ROOT / "workflow-imap-trigger.json").read_text(encoding="utf-8"),
+        )
+        workflow_telemetry = {
+            node["name"] for node in workflow["nodes"] if node["name"].startswith("Telemetry ")
+        }
+        trigger_telemetry = {
+            node["name"]
+            for node in trigger_export["nodes"]
+            if node["name"].startswith("Telemetry ")
+        }
+
+        self.assertEqual(trigger_telemetry, workflow_telemetry)
+        self.assertEqual(
+            trigger_export["connections"]["Classify with Ollama"]["main"][0][0]["node"],
+            "Telemetry build classification attempt",
+        )
 
     def test_system_prompt_includes_schedule_and_spam_like_labels(self):
         assignments = self.build_prompt_assignments()

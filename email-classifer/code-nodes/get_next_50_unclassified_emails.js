@@ -417,6 +417,13 @@ function summaryFromRaw(uid, raw, config) {
     credentialPairId: config.id,
     credentialPair: publicCredentialPair(config),
     sourceMailbox: config.sourceMailbox,
+    telemetry: config.telemetry || {},
+    batchLimit: config.batchLimit,
+    maxBatches: config.maxBatches,
+    rawFetchByteLimit: config.rawFetchByteLimit,
+    fetchWatchdogMs: config.fetchWatchdogMs,
+    uidSearchWindow: config.uidSearchWindow,
+    imapPairsJson: config.imapPairsJson || '',
     labelPrefix: config.labelPrefix,
     stateLabel: config.stateLabel,
     dryRun: config.dryRun,
@@ -630,10 +637,18 @@ const defaults = {
   fetchWatchdogMs: numberValue(configValue(inputConfig, 'fetchWatchdogMs', 120000), 120000, 'Fetch watchdog milliseconds'),
   uidSearchWindow: numberValue(configValue(inputConfig, 'uidSearchWindow', 500), 500, 'UID search window'),
   dryRun: boolValue(inputConfig.dryRun, false),
+  telemetry: inputConfig.telemetry || {},
 };
 
 if (defaults.dryRun && runIndex > 0) {
-  return [{ json: { emails: [], total_emails: 0, stopped_reason: 'dry_run_single_batch' } }];
+  return [{
+    json: {
+      emails: [],
+      total_emails: 0,
+      stopped_reason: 'dry_run_single_batch',
+      telemetry: defaults.telemetry,
+    },
+  }];
 }
 
 if (defaults.maxBatches > 0 && runIndex >= defaults.maxBatches) {
@@ -644,6 +659,7 @@ if (defaults.maxBatches > 0 && runIndex >= defaults.maxBatches) {
       total_emails: 0,
       stopped_reason: 'max_batches_reached',
       max_batches: defaults.maxBatches,
+      telemetry: defaults.telemetry,
     },
   }];
 }
@@ -701,7 +717,18 @@ for (const pair of credentialPairs) {
     for (const sourceMailbox of pair.sourceMailboxes) {
       if (emails.length >= defaults.batchLimit) break;
 
-      const mailboxConfig = { ...pair, sourceMailbox, dryRun: defaults.dryRun };
+      const mailboxConfig = {
+        ...pair,
+        sourceMailbox,
+        dryRun: defaults.dryRun,
+        telemetry: defaults.telemetry,
+        batchLimit: defaults.batchLimit,
+        maxBatches: defaults.maxBatches,
+        rawFetchByteLimit: defaults.rawFetchByteLimit,
+        fetchWatchdogMs: defaults.fetchWatchdogMs,
+        uidSearchWindow: defaults.uidSearchWindow,
+        imapPairsJson: inputConfig.imapPairsJson || '',
+      };
       markProgress('read_source_uidnext', { sourceMailbox });
       const uidNext = await client.uidNext(sourceMailbox);
       markProgress('source_uidnext_loaded', { sourceMailbox, rangeEnd: uidNext - 1 });
@@ -777,5 +804,6 @@ return [{
     warnings,
     total_emails: emails.length,
     stopped_reason: emails.length ? 'batch_ready' : 'inbox_fully_classified',
+    telemetry: defaults.telemetry,
   },
 }];
