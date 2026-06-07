@@ -6,9 +6,9 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 ## Current Revision
 
-`Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, raw JSON parsing in Proton label target preparation, and separate JavaScript Code-node apply paths for bulk and trigger processing.
+`Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, raw JSON parsing in Proton label target preparation, an empty-batch stop guard, and separate JavaScript Code-node apply paths for bulk and trigger processing.
 
-The saved n8n workflow is not active and is not published. Manual execution now reaches `Get next 50 unclassified emails` and is blocked until real IMAP credential values are provided for the configured credential pairs.
+The saved n8n workflow is not active and is not published. During setup, `Configure Proton IMAP batch` sets `maxBatches=1` so a manual execution processes at most one 50-email batch and then stops. Set `maxBatches=0` later to allow full-inbox backfill.
 
 ## Proton IMAP Target
 
@@ -31,6 +31,7 @@ Bulk path:
 Manual Trigger
   -> Configure Proton IMAP batch
   -> Get next 50 unclassified emails
+  -> Stop if no fetched emails
   -> Expand fetched emails
   -> Loop Over Emails
   -> Build classification prompt
@@ -61,6 +62,8 @@ Email Trigger (IMAP)
 - Model: `gemma4-26b:4090`
 
 The Python helper is retained only as legacy local test coverage. The current workflow performs IMAP fetch and label application inside n8n JavaScript Code nodes, and n8n performs classification through the visible AI node.
+
+During setup, `Classify with Ollama` has retry disabled so model errors stop the workflow and are visible in the execution.
 
 ## Runtime Environment
 
@@ -103,4 +106,5 @@ No `enabled_tools` allow-list is configured, so Codex should expose all tools ad
 - Replace placeholder values for `IMAP_1_USER`, `IMAP_1_PASSWORD`, `IMAP_2_USER`, and `IMAP_2_PASSWORD`; update host/port variables if either endpoint differs; add more pairs and variables if needed.
 - If using Coolify runtime env vars rather than n8n variables, explicitly approve `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
 - Confirm all Proton labels exist under `Labels`, including `Labels/Classified`.
+- Keep `maxBatches=1` while validating; set it to `0` only when ready for a full manual classification run.
 - Configure production queue/concurrency to `1` before activating the workflow.

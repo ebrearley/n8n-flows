@@ -53,6 +53,7 @@ class WorkflowJsonTests(unittest.TestCase):
     def test_configure_node_defines_credential_pair_list(self):
         assignments = self.configure_assignments()
         self.assertIn("imapPairsJson", assignments)
+        self.assertEqual(assignments["maxBatches"]["value"], 1)
 
         pairs = json.loads(assignments["imapPairsJson"]["value"])
         self.assertIsInstance(pairs, list)
@@ -121,6 +122,31 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("BODY.PEEK[HEADER]", code)
         self.assertLess(code.index("fetchHeaders(uid"), code.index("fetchRaw(uid"))
 
+    def test_fetch_has_setup_batch_limit_to_prevent_unbounded_manual_runs(self):
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        self.assertIn("maxBatches", code)
+        self.assertIn("max_batches_reached", code)
+        self.assertIn("runIndex >= defaults.maxBatches", code)
+
+    def test_bulk_fetch_has_visible_stop_guard_for_empty_batches(self):
+        nodes = self.nodes_by_name()
+        self.assertIn("Stop if no fetched emails", nodes)
+
+        guard_code = nodes["Stop if no fetched emails"]["parameters"]["jsCode"]
+        self.assertIn("total_emails", guard_code)
+        self.assertIn("return []", guard_code)
+
+        workflow = self.load_workflow()
+        self.assertEqual(
+            workflow["connections"]["Get next 50 unclassified emails"]["main"][0][0]["node"],
+            "Stop if no fetched emails",
+        )
+        self.assertEqual(
+            workflow["connections"]["Stop if no fetched emails"]["main"][0][0]["node"],
+            "Expand fetched emails",
+        )
+
     def test_tls_servername_is_not_set_for_ip_hosts(self):
         nodes = self.nodes_by_name()
 
@@ -147,12 +173,12 @@ class WorkflowJsonTests(unittest.TestCase):
             "odytrice/gemma4-26b:4090",
         )
 
-    def test_classification_retries_model_failures(self):
+    def test_workflow_stops_on_model_errors_during_setup(self):
         node = self.nodes_by_name()["Classify with Ollama"]
 
-        self.assertTrue(node["retryOnFail"])
-        self.assertEqual(node["maxTries"], 3)
-        self.assertEqual(node["waitBetweenTries"], 1000)
+        self.assertFalse(node.get("retryOnFail", False))
+        self.assertNotIn("maxTries", node)
+        self.assertNotIn("waitBetweenTries", node)
 
     def test_uncertain_fenced_ai_output_applies_only_classified_and_continues(self):
         workflow = self.load_workflow()

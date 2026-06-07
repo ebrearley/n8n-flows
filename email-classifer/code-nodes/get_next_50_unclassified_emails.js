@@ -527,11 +527,24 @@ const defaults = {
   userVar: String(configValue(inputConfig, 'userVar', 'IMAP_USER')),
   passwordVar: String(configValue(inputConfig, 'passwordVar', 'IMAP_PASSWORD')),
   batchLimit: Number(configValue(inputConfig, 'batchLimit', 50)),
+  maxBatches: numberValue(configValue(inputConfig, 'maxBatches', 1), 1, 'Max batches'),
   dryRun: boolValue(inputConfig.dryRun, false),
 };
 
 if (defaults.dryRun && runIndex > 0) {
   return [{ json: { emails: [], total_emails: 0, stopped_reason: 'dry_run_single_batch' } }];
+}
+
+if (defaults.maxBatches > 0 && runIndex >= defaults.maxBatches) {
+  return [{
+    json: {
+      emails: [],
+      warnings: [],
+      total_emails: 0,
+      stopped_reason: 'max_batches_reached',
+      max_batches: defaults.maxBatches,
+    },
+  }];
 }
 
 const credentialPairs = credentialPairsFromConfig(inputConfig, defaults);

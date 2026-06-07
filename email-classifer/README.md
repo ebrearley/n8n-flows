@@ -22,6 +22,7 @@ Bulk pass:
 Manual Trigger
   -> Configure Proton IMAP batch
   -> Get next 50 unclassified emails
+  -> Stop if no fetched emails
   -> Expand fetched emails
   -> Loop Over Emails
   -> Build classification prompt
@@ -65,6 +66,8 @@ The workflow does not create labels, create folders, move source messages, delet
 The live `Email Trigger (IMAP)` node uses the credential assigned in n8n.
 
 The bulk fetch and label-application Code nodes cannot read the `Email Trigger (IMAP)` credential secrets directly, so each IMAP account is configured as an entry in `imapPairsJson` on `Configure Proton IMAP batch`.
+
+During setup, `Configure Proton IMAP batch` sets `maxBatches=1` so one manual execution processes at most one 50-email batch. Set `maxBatches=0` only when you are ready for the manual workflow to keep fetching batches until the inbox is classified.
 
 Each credential pair names the variables that hold its username and password:
 
