@@ -1,6 +1,19 @@
 const net = require('net');
 const tls = require('tls');
 
+const SOURCE_HEADER_FIELDS = [
+  'FROM',
+  'TO',
+  'SUBJECT',
+  'DATE',
+  'MESSAGE-ID',
+  'DELIVERED-TO',
+  'X-ORIGINAL-TO',
+  'CONTENT-TYPE',
+  'CONTENT-TRANSFER-ENCODING',
+].join(' ');
+const MESSAGE_ID_HEADER_FIELDS = 'MESSAGE-ID';
+
 class ImapClient {
   constructor(config) {
     this.host = config.host;
@@ -8,6 +21,7 @@ class ImapClient {
     this.ssl = config.ssl;
     this.startTls = config.startTls;
     this.allowUnauthorizedCerts = config.allowUnauthorizedCerts;
+    this.rawFetchByteLimit = config.rawFetchByteLimit;
     this.socket = null;
     this.buffer = '';
     this.waiters = [];
@@ -138,7 +152,7 @@ class ImapClient {
   }
 
   async select(mailbox) {
-    await this.command(`SELECT ${quoteString(mailbox)}`);
+    return await this.command(`SELECT ${quoteString(mailbox)}`);
   }
 
   async mailboxExists(mailbox) {
@@ -152,21 +166,55 @@ class ImapClient {
     return parseSearchResponse(response);
   }
 
-  async searchMessageId(mailbox, messageId) {
+  async uidNext(mailbox) {
+    const response = await this.select(mailbox);
+    const match = /\[UIDNEXT\s+(\d+)\]/i.exec(response);
+    if (!match) throw new Error(`IMAP SELECT ${mailbox} did not return UIDNEXT`);
+    return Number(match[1]);
+  }
+
+  async searchUidRange(mailbox, startUid, endUid) {
     await this.select(mailbox);
-    const response = await this.command(`UID SEARCH HEADER Message-ID ${quoteString(messageId)}`);
+    const response = await this.command(`UID SEARCH UID ${startUid}:${endUid}`, 60000);
     return parseSearchResponse(response);
   }
 
-  async fetchHeaders(uid, mailbox) {
+  async searchMessageId(mailbox, messageId) {
     await this.select(mailbox);
-    const response = await this.command(`UID FETCH ${uid} (BODY.PEEK[HEADER])`, 120000);
+    const response = await this.command(`UID SEARCH HEADER Message-ID ${quoteString(messageId)}`, 60000);
+    return parseSearchResponse(response);
+  }
+
+  async fetchHeaders(uid, mailbox, fields = SOURCE_HEADER_FIELDS) {
+    await this.select(mailbox);
+    const response = await this.command(`UID FETCH ${uid} (BODY.PEEK[HEADER.FIELDS (${fields})])`, 60000);
     return firstLiteral(response);
+  }
+
+  async fetchHeadersForUids(uids, mailbox, fields = SOURCE_HEADER_FIELDS) {
+    if (uids.length === 0) return [];
+    await this.select(mailbox);
+    const response = await this.command(`UID FETCH ${uids.join(',')} (BODY.PEEK[HEADER.FIELDS (${fields})])`, 120000);
+    return fetchLiterals(response);
+  }
+
+  async fetchMessageIds(mailbox) {
+    const uids = await this.searchAll(mailbox);
+    const messageIds = new Set();
+    for (const batch of chunked(uids, 100)) {
+      const headersByUid = await this.fetchHeadersForUids(batch, mailbox, MESSAGE_ID_HEADER_FIELDS);
+      for (const entry of headersByUid) {
+        const headers = parseHeaders(entry.literal);
+        const messageId = headers['message-id'] || '';
+        if (messageId) messageIds.add(messageId);
+      }
+    }
+    return messageIds;
   }
 
   async fetchRaw(uid, mailbox) {
     await this.select(mailbox);
-    const response = await this.command(`UID FETCH ${uid} (BODY.PEEK[])`, 120000);
+    const response = await this.command(`UID FETCH ${uid} (BODY.PEEK[]<0.${this.rawFetchByteLimit}>)`, 60000);
     return firstLiteral(response);
   }
 
@@ -195,6 +243,26 @@ function firstLiteral(response) {
   const start = match.index + match[0].length;
   const length = Number(match[1]);
   return response.slice(start, start + length);
+}
+
+function fetchLiterals(response) {
+  const literals = [];
+  const literalPattern = /\{(\d+)\}\r\n/g;
+  let match;
+
+  while ((match = literalPattern.exec(response))) {
+    const literalStart = literalPattern.lastIndex;
+    const length = Number(match[1]);
+    const literal = response.slice(literalStart, literalStart + length);
+    const lineStart = response.lastIndexOf('\r\n* ', match.index);
+    const prefixStart = lineStart >= 0 ? lineStart + 2 : 0;
+    const prefix = response.slice(prefixStart, match.index);
+    const uid = /UID\s+(\d+)/i.exec(prefix)?.[1];
+    if (uid) literals.push({ uid: String(uid), literal });
+    literalPattern.lastIndex = literalStart + length;
+  }
+
+  return literals;
 }
 
 function parseHeaders(rawHeaders) {
@@ -349,6 +417,15 @@ function summaryFromRaw(uid, raw, config) {
     credentialPairId: config.id,
     credentialPair: publicCredentialPair(config),
     sourceMailbox: config.sourceMailbox,
+    telemetry: config.telemetry || {},
+    run_id: config.telemetry?.run_id || config.run_id || '',
+    run_key: config.telemetry?.run_key || config.run_key || '',
+    batchLimit: config.batchLimit,
+    maxBatches: config.maxBatches,
+    rawFetchByteLimit: config.rawFetchByteLimit,
+    fetchWatchdogMs: config.fetchWatchdogMs,
+    uidSearchWindow: config.uidSearchWindow,
+    imapPairsJson: config.imapPairsJson || '',
     labelPrefix: config.labelPrefix,
     stateLabel: config.stateLabel,
     dryRun: config.dryRun,
@@ -457,6 +534,11 @@ function normalizeCredentialPair(rawPair, index, defaults) {
     sourceMailboxes,
     labelPrefix: String(configValue(pair, 'labelPrefix', defaults.labelPrefix)),
     stateLabel: String(configValue(pair, 'stateLabel', defaults.stateLabel)),
+    rawFetchByteLimit: numberValue(
+      configValue(pair, 'rawFetchByteLimit', defaults.rawFetchByteLimit),
+      defaults.rawFetchByteLimit,
+      `Credential pair ${id} raw fetch byte limit`,
+    ),
     dryRun: defaults.dryRun,
   };
 }
@@ -482,9 +564,33 @@ function credentialPairsFromConfig(inputConfig, defaults) {
         sourceMailboxes: [defaults.sourceMailbox],
         labelPrefix: defaults.labelPrefix,
         stateLabel: defaults.stateLabel,
+        rawFetchByteLimit: defaults.rawFetchByteLimit,
       }];
 
   return pairs.map((pair, index) => normalizeCredentialPair(pair, index, defaults));
+}
+
+function chunked(values, size) {
+  const chunks = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function assertFetchWithinWatchdog(startedAt, fetchWatchdogMs, progress) {
+  if (fetchWatchdogMs <= 0) return;
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs > fetchWatchdogMs) {
+    throw new Error(`Fetch watchdog exceeded after ${elapsedMs}ms: ${JSON.stringify(progress)}`);
+  }
+}
+
+function withProgressError(error, progress) {
+  if (error && typeof error.message === 'string' && !error.message.includes('fetch progress')) {
+    error.message = `${error.message}; fetch progress ${JSON.stringify(progress)}`;
+  }
+  return error;
 }
 
 function publicCredentialPair(pair) {
@@ -502,14 +608,40 @@ function publicCredentialPair(pair) {
     sourceMailboxes: pair.sourceMailboxes,
     labelPrefix: pair.labelPrefix,
     stateLabel: pair.stateLabel,
+    rawFetchByteLimit: pair.rawFetchByteLimit,
+  };
+}
+
+function telemetryFromConfig(config) {
+  const telemetry = config.telemetry && typeof config.telemetry === 'object'
+    ? config.telemetry
+    : {};
+  if (Object.keys(telemetry).length > 0) return telemetry;
+
+  return {
+    run_id: config.run_id || '',
+    run_key: config.run_key || '',
+    workflow_id: config.workflow_id || '',
+    workflow_name: config.workflow_name || '',
+    execution_id: config.execution_id || '',
+    trigger_mode: config.trigger_mode || '',
+    started_at: config.started_at || '',
   };
 }
 
 let inputConfig = {};
 try {
-  inputConfig = $('Configure Proton IMAP batch').first().json;
-} catch {
   inputConfig = $input.first()?.json ?? {};
+} catch {
+  inputConfig = {};
+}
+
+if (Object.keys(inputConfig).length === 0) {
+  try {
+    inputConfig = $('Configure Proton IMAP batch').first().json;
+  } catch {
+    inputConfig = {};
+  }
 }
 
 const runIndex = typeof $runIndex === 'number' ? $runIndex : 0;
@@ -527,12 +659,25 @@ const defaults = {
   userVar: String(configValue(inputConfig, 'userVar', 'IMAP_USER')),
   passwordVar: String(configValue(inputConfig, 'passwordVar', 'IMAP_PASSWORD')),
   batchLimit: Number(configValue(inputConfig, 'batchLimit', 50)),
-  maxBatches: numberValue(configValue(inputConfig, 'maxBatches', 1), 1, 'Max batches'),
+  maxBatches: numberValue(configValue(inputConfig, 'maxBatches', 0), 0, 'Max batches'),
+  rawFetchByteLimit: numberValue(configValue(inputConfig, 'rawFetchByteLimit', 65536), 65536, 'Raw fetch byte limit'),
+  fetchWatchdogMs: numberValue(configValue(inputConfig, 'fetchWatchdogMs', 120000), 120000, 'Fetch watchdog milliseconds'),
+  uidSearchWindow: numberValue(configValue(inputConfig, 'uidSearchWindow', 500), 500, 'UID search window'),
   dryRun: boolValue(inputConfig.dryRun, false),
+  telemetry: telemetryFromConfig(inputConfig),
 };
 
 if (defaults.dryRun && runIndex > 0) {
-  return [{ json: { emails: [], total_emails: 0, stopped_reason: 'dry_run_single_batch' } }];
+  return [{
+    json: {
+      emails: [],
+      total_emails: 0,
+      stopped_reason: 'dry_run_single_batch',
+      telemetry: defaults.telemetry,
+      run_id: defaults.telemetry.run_id || '',
+      run_key: defaults.telemetry.run_key || '',
+    },
+  }];
 }
 
 if (defaults.maxBatches > 0 && runIndex >= defaults.maxBatches) {
@@ -543,6 +688,9 @@ if (defaults.maxBatches > 0 && runIndex >= defaults.maxBatches) {
       total_emails: 0,
       stopped_reason: 'max_batches_reached',
       max_batches: defaults.maxBatches,
+      telemetry: defaults.telemetry,
+      run_id: defaults.telemetry.run_id || '',
+      run_key: defaults.telemetry.run_key || '',
     },
   }];
 }
@@ -553,6 +701,25 @@ const warnings = [];
 
 for (const pair of credentialPairs) {
   if (emails.length >= defaults.batchLimit) break;
+  const fetchStartedAt = Date.now();
+  const progress = {
+    stage: 'credential_pair_start',
+    pair: pair.id,
+    stateMailbox: `${pair.labelPrefix}/${pair.stateLabel}`,
+    sourceMailbox: '',
+    classifiedUidCount: 0,
+    sourceUidCount: 0,
+    rangeStart: 0,
+    rangeEnd: 0,
+    candidateChecks: 0,
+    bodyFetches: 0,
+    emails: emails.length,
+  };
+  function markProgress(stage, updates = {}) {
+    progress.stage = stage;
+    Object.assign(progress, updates, { emails: emails.length });
+    assertFetchWithinWatchdog(fetchStartedAt, defaults.fetchWatchdogMs, progress);
+  }
 
   const username = envValue(pair.userVar);
   const password = envValue(pair.passwordVar);
@@ -564,9 +731,12 @@ for (const pair of credentialPairs) {
   const client = new ImapClient(pair);
 
   try {
+    markProgress('connect');
     await client.connect();
+    markProgress('login');
     await client.login(username, password);
 
+    markProgress('check_state_mailbox');
     const stateMailboxExists = await client.mailboxExists(stateMailbox);
     if (!stateMailboxExists && !pair.dryRun) {
       throw new Error(`Required Proton label mailbox does not exist for credential pair ${pair.id}: ${stateMailbox}`);
@@ -578,22 +748,84 @@ for (const pair of credentialPairs) {
     for (const sourceMailbox of pair.sourceMailboxes) {
       if (emails.length >= defaults.batchLimit) break;
 
-      const mailboxConfig = { ...pair, sourceMailbox, dryRun: defaults.dryRun };
-      const uids = (await client.searchAll(sourceMailbox)).reverse();
-      for (const uid of uids) {
-        const rawHeaders = await client.fetchHeaders(uid, sourceMailbox);
-        const headers = parseHeaders(rawHeaders);
-        const messageId = headers['message-id'] || '';
-        if (stateMailboxExists && messageId) {
-          const matches = await client.searchMessageId(stateMailbox, messageId);
-          if (matches.length > 0) continue;
+      const mailboxConfig = {
+        ...pair,
+        sourceMailbox,
+        dryRun: defaults.dryRun,
+        telemetry: defaults.telemetry,
+        run_id: defaults.telemetry.run_id || '',
+        run_key: defaults.telemetry.run_key || '',
+        batchLimit: defaults.batchLimit,
+        maxBatches: defaults.maxBatches,
+        rawFetchByteLimit: defaults.rawFetchByteLimit,
+        fetchWatchdogMs: defaults.fetchWatchdogMs,
+        uidSearchWindow: defaults.uidSearchWindow,
+        imapPairsJson: inputConfig.imapPairsJson || '',
+      };
+      markProgress('read_source_uidnext', { sourceMailbox });
+      const uidNext = await client.uidNext(sourceMailbox);
+      markProgress('source_uidnext_loaded', { sourceMailbox, rangeEnd: uidNext - 1 });
+
+      for (
+        let rangeEnd = uidNext - 1;
+        rangeEnd >= 1 && emails.length < defaults.batchLimit;
+        rangeEnd -= defaults.uidSearchWindow
+      ) {
+        const rangeStart = Math.max(1, rangeEnd - defaults.uidSearchWindow + 1);
+        markProgress('search_source_uid_range', { sourceMailbox, rangeStart, rangeEnd });
+        const rangeUids = (await client.searchUidRange(sourceMailbox, rangeStart, rangeEnd)).reverse();
+        markProgress('source_uid_range_loaded', {
+          sourceMailbox,
+          rangeStart,
+          rangeEnd,
+          sourceUidCount: progress.sourceUidCount + rangeUids.length,
+        });
+        if (rangeUids.length === 0) continue;
+
+        for (const uidBatch of chunked(rangeUids, 100)) {
+          markProgress('fetch_candidate_headers', {
+            sourceMailbox,
+            rangeStart,
+            rangeEnd,
+            candidateChecks: progress.candidateChecks + uidBatch.length,
+          });
+          const batchHeaders = await client.fetchHeadersForUids(uidBatch, sourceMailbox);
+          const headersByUid = new Map(batchHeaders.map((entry) => [String(entry.uid), entry.literal]));
+
+          for (const uid of uidBatch) {
+            markProgress('check_candidate_state', {
+              sourceMailbox,
+              rangeStart,
+              rangeEnd,
+              candidateChecks: progress.candidateChecks + 1,
+            });
+            const rawHeaders = headersByUid.get(String(uid)) || await client.fetchHeaders(uid, sourceMailbox);
+            const headers = parseHeaders(rawHeaders);
+            const messageId = headers['message-id'] || '';
+            if (stateMailboxExists && messageId) {
+              const matches = await client.searchMessageId(stateMailbox, messageId);
+              if (matches.length > 0) continue;
+            }
+
+            markProgress('fetch_candidate_body', {
+              sourceMailbox,
+              rangeStart,
+              rangeEnd,
+              bodyFetches: progress.bodyFetches + 1,
+            });
+            const raw = await client.fetchRaw(uid, sourceMailbox);
+            const summary = summaryFromRaw(uid, raw, mailboxConfig);
+            emails.push(summary);
+            markProgress('candidate_ready', { sourceMailbox, rangeStart, rangeEnd });
+            if (emails.length >= defaults.batchLimit) break;
+          }
+
+          if (emails.length >= defaults.batchLimit) break;
         }
-        const raw = await client.fetchRaw(uid, sourceMailbox);
-        const summary = summaryFromRaw(uid, raw, mailboxConfig);
-        emails.push(summary);
-        if (emails.length >= defaults.batchLimit) break;
       }
     }
+  } catch (error) {
+    throw withProgressError(error, progress);
   } finally {
     await client.logout().catch(() => {});
   }
@@ -605,5 +837,6 @@ return [{
     warnings,
     total_emails: emails.length,
     stopped_reason: emails.length ? 'batch_ready' : 'inbox_fully_classified',
+    telemetry: defaults.telemetry,
   },
 }];

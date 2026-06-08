@@ -6,9 +6,11 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 ## Current Revision
 
-`Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, raw JSON parsing in Proton label target preparation, an empty-batch stop guard, and separate JavaScript Code-node apply paths for bulk and trigger processing.
+`Email Organiser` (`fm6pLPnZWsGfK1oH`) is an inactive n8n workflow. It now has a visible batch loop, visible Ollama AI classification node, raw JSON parsing in Proton label target preparation, an empty-batch stop guard, separate JavaScript Code-node apply paths for bulk and trigger processing, and Postgres-backed telemetry.
 
-The saved n8n workflow is not active and is not published. During setup, `Configure Proton IMAP batch` sets `maxBatches=1` so a manual execution processes at most one 50-email batch and then stops. Set `maxBatches=0` later to allow full-inbox backfill.
+The saved n8n workflow is published but inactive. `Configure Proton IMAP batch` sets `batchLimit=50` and `maxBatches=0` so a manual execution keeps fetching 50-email batches until no unclassified emails remain. Keep it inactive until the initial label setup and backfill are intentionally started.
+
+The bulk fetch path avoids full mailbox and classified-message preloads. It scans source mailboxes by bounded UID ranges (`uidSearchWindow=500`), verifies candidate `Message-ID`s against `Labels/Classified` as needed, requests only selected IMAP header fields, and caps each raw email preview at `rawFetchByteLimit=65536` bytes. `fetchWatchdogMs=120000` stops the first batch fetch with stage counters if it stalls.
 
 ## Proton IMAP Target
 
@@ -65,6 +67,25 @@ The Python helper is retained only as legacy local test coverage. The current wo
 
 During setup, `Classify with Ollama` has retry disabled so model errors stop the workflow and are visible in the execution.
 
+## Telemetry And Status App
+
+The workflow writes telemetry to the separate `workflow_status` database through first-party n8n Postgres nodes with the n8n credential named `Workflow Status Postgres`. The Code nodes prepare query replacement arrays; the Postgres nodes must use `options.queryReplacement`, not `queryParameters`, on n8n 2.23.x.
+
+Status app:
+
+```text
+https://n8n-workflow-status.home.brearley.net
+```
+
+The app is deployed in Coolify and can read Postgres telemetry. Replace the app's placeholder `N8N_API_KEY=REPLACE_WITH_N8N_API_KEY` with a real n8n API key if n8n workflow metadata enrichment is needed.
+
+Validation on 2026-06-07:
+
+- Live workflow export: inactive, 43 nodes, 11 credentialed nodes, `batchLimit=50`, `maxBatches=0`.
+- One-email manual execution `52`: success, one email processed, one classification attempt recorded, one `Labels/Classified` label action recorded.
+- Telemetry estimate for execution `52`: prompt tokens `1453`, completion tokens `64`, total estimated tokens `1517`.
+- Status app `/api/overview`: `runningRuns=0`, `recentFailures=0`, `totalRuns=3`, `estimatedTokens=1517`.
+
 ## Runtime Environment
 
 The `Email Trigger (IMAP)` node uses the IMAP credential assigned in n8n.
@@ -106,5 +127,9 @@ No `enabled_tools` allow-list is configured, so Codex should expose all tools ad
 - Replace placeholder values for `IMAP_1_USER`, `IMAP_1_PASSWORD`, `IMAP_2_USER`, and `IMAP_2_PASSWORD`; update host/port variables if either endpoint differs; add more pairs and variables if needed.
 - If using Coolify runtime env vars rather than n8n variables, explicitly approve `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
 - Confirm all Proton labels exist under `Labels`, including `Labels/Classified`.
-- Keep `maxBatches=1` while validating; set it to `0` only when ready for a full manual classification run.
+- Keep `maxBatches=0` for full manual backfill; set it to a positive number only for deliberately capped test runs.
+- Keep `rawFetchByteLimit=65536` unless larger email body previews are needed for classification.
+- Keep `fetchWatchdogMs=120000` while setup is being debugged so slow IMAP fetch stages fail visibly.
+- Keep `uidSearchWindow=500` unless the IMAP source range scans need tuning.
 - Configure production queue/concurrency to `1` before activating the workflow.
+- Leave the workflow inactive until manual backfill is intentionally started from the n8n UI.
