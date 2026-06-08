@@ -119,7 +119,7 @@ Latest verified live state from the step-telemetry work:
 Codex n8n MCP config used during setup:
 
 ```toml
-[mcp_servers.n8n-mcp]
+[mcp_servers.n8n]
 url = "https://n8n.home.ericbrearley.com/mcp-server/http"
 bearer_token_env_var = "N8N_MCP_ACCESS_TOKEN"
 ```
@@ -130,13 +130,13 @@ Check the local Codex MCP registration:
 
 ```bash
 codex mcp list
-codex mcp get n8n-mcp
+codex mcp get n8n
 ```
 
 Expected registration:
 
 ```text
-Name: n8n-mcp
+Name: n8n
 URL: https://n8n.home.ericbrearley.com/mcp-server/http
 Bearer token env var: N8N_MCP_ACCESS_TOKEN
 Status: enabled
@@ -314,6 +314,45 @@ Scopes reported by `search_workflows` for `Email Organiser`:
 - `workflow:update`
 
 `list_credentials` returns credential metadata only and must not return secret values.
+
+## n8n Public API Context
+
+Codex can also access the n8n public API directly with `N8N_API_ACCESS_KEY`. This is separate from `N8N_MCP_ACCESS_TOKEN`.
+
+Use the API key through the `X-N8N-API-KEY` header and do not print the key:
+
+```bash
+if [ -n "$N8N_API_ACCESS_KEY" ]; then printf 'N8N_API_ACCESS_KEY is set\n'; else printf 'N8N_API_ACCESS_KEY is not set\n'; fi
+```
+
+Read workflow metadata:
+
+```bash
+curl -sS \
+  -H "X-N8N-API-KEY: $N8N_API_ACCESS_KEY" \
+  -H 'accept: application/json' \
+  https://n8n.home.ericbrearley.com/api/v1/workflows/fm6pLPnZWsGfK1oH
+```
+
+This returns the workflow graph. Do not print the full response unless the user explicitly needs it and it has been checked for sensitive data. For normal diagnostics, reduce it to metadata such as workflow ID, name, active state, node count, trigger count, updated time, and settings keys.
+
+Safe write-path verification for an already-inactive workflow:
+
+```bash
+curl -sS -X POST \
+  -H "X-N8N-API-KEY: $N8N_API_ACCESS_KEY" \
+  -H 'accept: application/json' \
+  https://n8n.home.ericbrearley.com/api/v1/workflows/fm6pLPnZWsGfK1oH/deactivate
+```
+
+This was verified on 2026-06-09 against `Email Organiser`:
+
+- API read `GET /api/v1/workflows/fm6pLPnZWsGfK1oH` succeeded;
+- API write `POST /api/v1/workflows/fm6pLPnZWsGfK1oH/deactivate` succeeded while the workflow was already inactive;
+- final API read confirmed the workflow stayed inactive with 103 nodes and 2 triggers;
+- no private email execution data was read or printed.
+
+Current n8n public API docs show workflow updates use `PUT /workflows/{id}` with required fields `name`, `nodes`, `connections`, and `settings`, while `active`, `id`, `createdAt`, `updatedAt`, and `tags` are read-only. Manage active state separately with activate/deactivate endpoints. Be careful with full-workflow `PUT`: live exports may include settings such as `availableInMCP` that the public API schema can reject, and graph updates can affect the live draft. Prefer MCP `update_workflow` or the established import flow for workflow graph changes unless you have first sanitized and validated the public API payload.
 
 ## Email Organiser Goals
 
