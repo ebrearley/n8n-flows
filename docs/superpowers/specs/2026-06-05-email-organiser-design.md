@@ -36,7 +36,7 @@ The workflow must not create labels, create folders, move source messages, delet
 
 Backfill/manual bulk pass:
 
-1. `Manual Trigger` or `Backfill Form Trigger` starts the pass from n8n.
+1. `Backfill Form Trigger` starts the pass from n8n.
 2. `Configure Proton IMAP batch` sets `imapPairsJson`, `batchLimit=50`, `maxBatches=0`, `rawFetchByteLimit=65536`, `fetchWatchdogMs=120000`, `uidSearchWindow=500`, and fallback IMAP defaults.
 3. `Get next 50 unclassified emails` runs JavaScript in an n8n Code node.
 4. The Code node iterates credential pairs, reading each pair's `userVar` and `passwordVar` from n8n variables first, then environment variables.
@@ -55,8 +55,9 @@ Live trigger:
 
 1. `Email Trigger (IMAP)` emits one new email item using the n8n IMAP credential.
 2. `Normalize trigger email` maps the trigger payload to the same email item shape as the bulk path.
-3. The item flows through `Build classification prompt`, `Classify with Ollama`, and `Prepare Proton label targets`.
-4. `From bulk loop?` routes trigger items to `Apply Proton labels (trigger)`, which applies labels and exits without entering the bulk loop.
+3. `Skip classified trigger email` drops messages whose `Message-ID` is already present in `Labels/Classified`.
+4. The remaining item flows through `Build classification prompt`, `Classify with Ollama`, and `Prepare Proton label targets`.
+5. `From bulk loop?` routes trigger items to `Apply Proton labels (trigger)`, which applies labels and exits without entering the bulk loop.
 
 ## Runtime Requirements
 
@@ -87,7 +88,7 @@ All destination labels must already exist under Proton's `Labels` mailbox, inclu
 
 The workflow should remain inactive until the required labels and runtime environment are ready.
 
-As of the 2026-06-08 handoff, the user had asked to remove the editor-only `Manual Trigger` and keep the backfill trigger, but local main still contained both. Confirm current checkout state before changing tests or imports.
+The editor-only `Manual Trigger` has been removed from local main. Triggered classification uses `trackLastMessageId=false` plus a classified-message guard to avoid the n8n 2.23.x first-activation `SINCE` issue while still skipping previously classified trigger items.
 
 While the workflow is being set up, model retries are disabled so errors stop the execution and remain visible in n8n.
 

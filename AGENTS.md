@@ -135,13 +135,12 @@ Live trigger behavior:
 - process the single trigger email through the same prompt, model, target preparation, and label-application path;
 - use n8n queue/concurrency so only one workflow execution runs at a time because local Ollama GPU compute is the bottleneck.
 
-The user later asked to remove the editor-only `Manual Trigger` and leave the backfill trigger. As of this document, the local main workflow still contains both `Manual Trigger` and `Backfill Form Trigger`. Treat trigger cleanup as open work unless you confirm it has already been done in the current checkout or live n8n.
+The editor-only `Manual Trigger` has been removed from the current local main export. `Backfill Form Trigger` is the only explicit backfill start.
 
 Manual versus backfill trigger:
 
-- `Manual Trigger` is the n8n editor manual execute trigger.
 - `Backfill Form Trigger` is a form/webhook-style trigger with path `email-organiser-backfill`.
-- The backfill trigger routes into the same bulk path as the manual trigger.
+- The backfill trigger routes into the bulk batch path at `Configure Proton IMAP batch`.
 
 ## Proton IMAP Context
 
@@ -289,7 +288,7 @@ Search option argument must be a Date object or a parseable date string
 
 Investigation on n8n `2.23.4` found that the installed EmailReadImap v2 code sets `activatedAt = DateTime.now()` and, when `staticData.lastMessageUid` is unset, `node.typeVersion > 2`, and `options.trackLastMessageId !== false`, it appends a `SINCE` search criterion formatted with `activatedAt.toFormat('dd-LLL-yyyy')`. The underlying `imap` package then rejected the search criterion.
 
-Current local trigger parameters observed on 2026-06-08:
+Current local trigger parameters after the 2026-06-08 cleanup:
 
 ```json
 {
@@ -298,17 +297,22 @@ Current local trigger parameters observed on 2026-06-08:
   "format": "simple",
   "downloadAttachments": false,
   "options": {
-    "trackLastMessageId": true,
+    "trackLastMessageId": false,
     "allowUnauthorizedCerts": true
   }
 }
 ```
 
-Proposed but not yet applied in the local main checkout:
+The trigger path now routes:
 
-- set `Email Trigger (IMAP)` `options.trackLastMessageId=false` to avoid the first-activation `SINCE` path;
-- add a trigger-side guard to skip messages already present in `Labels/Classified`, because disabling trigger UID tracking may emit old unread messages;
-- remove `Manual Trigger` and keep `Backfill Form Trigger` if the user still wants that simplification.
+```text
+Email Trigger (IMAP)
+  -> Normalize trigger email
+  -> Skip classified trigger email
+  -> Build classification prompt
+```
+
+`Skip classified trigger email` checks the trigger email's `Message-ID` in `Labels/Classified`. If a match exists, it returns no items so the email does not hit Ollama or label application. If no `Message-ID` is available, it lets the item continue and records `trigger_classified_check=skipped_missing_message_id`.
 
 Use ctx7 for current n8n docs before changing this node because n8n node behavior may have changed.
 

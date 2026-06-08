@@ -186,32 +186,22 @@ Trigger mode:
 
 1. `Email Trigger (IMAP)` emits one new email.
 2. Normalize it into the same item shape as the backfill path.
-3. Build prompt, classify, prepare label targets, apply labels.
-4. Exit without entering the backfill loop.
+3. `Skip classified trigger email` checks whether the trigger email's `Message-ID` is already present in `Labels/Classified`.
+4. If already classified, return no items so the message does not hit Ollama.
+5. If not already classified, build prompt, classify, prepare label targets, apply labels.
+6. Exit without entering the backfill loop.
 
 The user eventually wants only one workflow execution running at a time because the local Ollama model is expensive. Production n8n should use queue mode and a concurrency limit of one.
 
-## Manual Trigger Versus Backfill Trigger
+## Backfill Trigger
 
-The workflow currently contains both:
-
-```text
-Manual Trigger
-Backfill Form Trigger
-```
-
-`Manual Trigger` is the editor-only n8n manual execution button. `Backfill Form Trigger` is a form/webhook trigger whose path is:
+The editor-only `Manual Trigger` has been removed from local main. `Backfill Form Trigger` is the explicit backfill start and uses this path:
 
 ```text
 email-organiser-backfill
 ```
 
-The user asked to remove the manual trigger and leave the backfill trigger. That request had not been implemented before this handoff. If doing that work:
-
-- remove only the editor manual trigger path;
-- keep the backfill path wired to `Configure Proton IMAP batch`;
-- update tests that currently assert both triggers exist;
-- keep the bulk loop semantics unchanged.
+Keep the backfill path wired to `Configure Proton IMAP batch` and keep the bulk loop semantics unchanged.
 
 ## Proton IMAP Model
 
@@ -450,11 +440,11 @@ The `Email Trigger (IMAP)` node logged:
 Search option argument must be a Date object or a parseable date string
 ```
 
-Investigation on n8n `2.23.4` found the trigger can append a `SINCE` search condition on first activation if `trackLastMessageId` is enabled and static data has no last UID. Proposed work, not yet implemented in main:
+Investigation on n8n `2.23.4` found the trigger can append a `SINCE` search condition on first activation if `trackLastMessageId` is enabled and static data has no last UID.
 
-- set `trackLastMessageId=false`;
-- add a trigger-side skip guard for already-classified messages;
-- retest with current n8n docs and live n8n logs.
+Local main now sets `Email Trigger (IMAP)` `options.trackLastMessageId=false`. Because that may cause old unread messages to be emitted, local main also routes trigger items through `Skip classified trigger email` before the AI node. The guard checks `Labels/Classified` by `Message-ID` and returns no items for already-classified messages.
+
+Retest with current n8n docs and live n8n logs after importing this workflow shape.
 
 ## Telemetry Database
 
@@ -811,10 +801,7 @@ When adding a new flow in this repo:
 
 Open or likely follow-up tasks from the session:
 
-- Fix `Email Trigger (IMAP)` startup behavior.
-- Decide whether to set `trackLastMessageId=false`.
-- Add a trigger-side guard against already-classified messages if trigger tracking is disabled.
-- Remove `Manual Trigger` and keep `Backfill Form Trigger` if the user still wants that.
+- Import and retest the `Email Trigger (IMAP)` startup fix in live n8n.
 - Decide whether to merge the step telemetry branch into main.
 - Confirm live n8n still matches the telemetry workflow before importing any new local export.
 - Investigate why n8n logs were not visible in Grafana/Loki while other services were.

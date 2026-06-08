@@ -2,17 +2,6 @@
   "name": "Email Organiser",
   "nodes": [
     {
-      "id": "17fb1f68-8f45-4be6-aa90-b9d63251f4e0",
-      "name": "Manual Trigger",
-      "type": "n8n-nodes-base.manualTrigger",
-      "typeVersion": 1,
-      "position": [
-        -760,
-        80
-      ],
-      "parameters": {}
-    },
-    {
       "id": "98d693f3-c299-4790-b5f5-f5ad924f0bbb",
       "name": "Backfill Form Trigger",
       "type": "n8n-nodes-base.formTrigger",
@@ -205,7 +194,7 @@
         "format": "simple",
         "downloadAttachments": false,
         "options": {
-          "trackLastMessageId": true,
+          "trackLastMessageId": false,
           "allowUnauthorizedCerts": true
         }
       },
@@ -229,6 +218,21 @@
       ],
       "parameters": {
         "jsCode": "function parseSender(value) {\n  if (Array.isArray(value)) return parseSender(value[0]);\n  if (value && typeof value === 'object') {\n    if (Array.isArray(value.value)) return parseSender(value.value[0]);\n    if (Array.isArray(value.addresses)) return parseSender(value.addresses[0]);\n\n    const email = value.email || value.address || value.mail || '';\n    const name = value.name || value.displayName || '';\n    const header = String(value.value || value.text || (name || email ? `${name} <${email}>` : ''));\n    return { header, name, email };\n  }\n\n  const header = String(value || '');\n  const match = header.match(/^(.*?)\\s*<([^>]+)>$/);\n  if (match) {\n    return { header, name: match[1].replace(/^\"|\"$/g, '').trim(), email: match[2].trim() };\n  }\n  return { header, name: '', email: header.includes('@') ? header.trim() : '' };\n}\n\nfunction firstValue(...values) {\n  for (const value of values) {\n    if (value !== undefined && value !== null && value !== '') return value;\n  }\n  return '';\n}\n\nfunction stripHtml(value) {\n  return String(value || '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nconst metadata = $json.metadata && typeof $json.metadata === 'object' ? $json.metadata : {};\nconst attributes = $json.attributes && typeof $json.attributes === 'object' ? $json.attributes : {};\nconst sender = parseSender($json.from ?? $json.sender ?? $json.sender_email ?? $json.senderEmail);\nconst recipient = parseSender(\n  $json.to\n    ?? $json.recipient\n    ?? $json.recipients\n    ?? $json.recipient_email\n    ?? $json.recipientEmail\n    ?? $json.to_email\n    ?? $json.toEmail\n    ?? $json.deliveredTo\n    ?? $json['delivered-to']\n    ?? metadata.deliveredTo\n    ?? metadata['delivered-to']\n    ?? metadata['x-original-to'],\n);\nconst subject = String(firstValue($json.subject, $json.email_subject, $json.emailSubject));\nconst body = stripHtml(firstValue(\n  $json.text,\n  $json.textPlain,\n  $json.body,\n  $json.email_body,\n  $json.emailBody,\n  $json.textHtml,\n  $json.html,\n));\nconst credentialPair = {\n  id: 'imap-1',\n  host: '192.168.3.200',\n  port: 1143,\n  hostVar: 'IMAP_1_HOST',\n  portVar: 'IMAP_1_PORT',\n  ssl: false,\n  startTls: true,\n  allowUnauthorizedCerts: true,\n  userVar: 'IMAP_1_USER',\n  passwordVar: 'IMAP_1_PASSWORD',\n  sourceMailboxes: ['INBOX'],\n  labelPrefix: 'Labels',\n  stateLabel: 'Classified',\n};\n\nreturn [{\n  json: {\n    ...$json,\n    sourceFlow: 'trigger',\n    runMode: 'apply_labels',\n    uid: String(firstValue($json.uid, $json.imapUid, $json.messageUid, attributes.uid)),\n    message_id: String(firstValue(\n      $json.messageId,\n      $json.message_id,\n      $json['message-id'],\n      metadata.messageId,\n      metadata.message_id,\n      metadata['message-id'],\n      metadata['x-pm-external-id'],\n    )),\n    from: sender.header,\n    sender_name: sender.name,\n    sender_email: sender.email,\n    to: recipient.header,\n    recipient: recipient.email || recipient.header,\n    recipient_name: recipient.name,\n    recipient_email: recipient.email,\n    subject,\n    email_subject: subject,\n    body_preview: body.slice(0, 4000),\n    email_body: body.slice(0, 4000),\n    sourceMailbox: 'INBOX',\n    labelPrefix: 'Labels',\n    stateLabel: 'Classified',\n    credentialPairId: credentialPair.id,\n    credentialPair,\n    dryRun: false,\n    imapHost: '192.168.3.200',\n    imapPort: 1143,\n    imapSsl: false,\n    imapStartTls: true,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "61670ee7-7bff-4e09-a07d-9c5296357655",
+      "name": "Skip classified trigger email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        640
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const net = require('net');\nconst tls = require('tls');\n\nclass ImapClient {\n  constructor(config) {\n    this.host = config.host;\n    this.port = config.port;\n    this.ssl = config.ssl;\n    this.startTls = config.startTls;\n    this.allowUnauthorizedCerts = config.allowUnauthorizedCerts;\n    this.socket = null;\n    this.buffer = '';\n    this.waiters = [];\n    this.tagCounter = 0;\n  }\n\n  attachSocket(socket) {\n    this.socket = socket;\n    this.socket.setEncoding('binary');\n    this.socket.on('data', (chunk) => {\n      this.buffer += chunk;\n      this.flushWaiters();\n    });\n    this.socket.on('error', (error) => {\n      for (const waiter of this.waiters.splice(0)) waiter.reject(error);\n    });\n  }\n\n  flushWaiters() {\n    for (let index = 0; index < this.waiters.length; index += 1) {\n      const waiter = this.waiters[index];\n      let result;\n      try {\n        result = waiter.tryRead(this.buffer);\n      } catch (error) {\n        clearTimeout(waiter.timer);\n        this.waiters.splice(index, 1);\n        waiter.reject(error);\n        index -= 1;\n        continue;\n      }\n      if (!result) continue;\n      clearTimeout(waiter.timer);\n      this.buffer = this.buffer.slice(result.consumed);\n      this.waiters.splice(index, 1);\n      waiter.resolve(result.value);\n      index -= 1;\n    }\n  }\n\n  readWith(tryRead, timeoutMs = 30000) {\n    return new Promise((resolve, reject) => {\n      const waiter = {\n        tryRead,\n        resolve,\n        reject,\n        timer: setTimeout(() => {\n          const idx = this.waiters.indexOf(waiter);\n          if (idx >= 0) this.waiters.splice(idx, 1);\n          reject(new Error('Timed out waiting for IMAP response'));\n        }, timeoutMs),\n      };\n      this.waiters.push(waiter);\n      this.flushWaiters();\n    });\n  }\n\n  readLine() {\n    return this.readWith((buffer) => {\n      const end = buffer.indexOf('\\r\\n');\n      if (end < 0) return null;\n      return { value: buffer.slice(0, end), consumed: end + 2 };\n    });\n  }\n\n  tlsOptions(options) {\n    const tlsOptions = {\n      ...options,\n      rejectUnauthorized: !this.allowUnauthorizedCerts,\n    };\n    if (!net.isIP(this.host)) {\n      tlsOptions.servername = this.host;\n    }\n    return tlsOptions;\n  }\n\n  async connect() {\n    const socket = this.ssl\n      ? tls.connect(this.tlsOptions({\n          host: this.host,\n          port: this.port,\n        }))\n      : net.connect({ host: this.host, port: this.port });\n\n    this.attachSocket(socket);\n    await new Promise((resolve, reject) => {\n      socket.once('connect', resolve);\n      socket.once('secureConnect', resolve);\n      socket.once('error', reject);\n    });\n    await this.readLine();\n\n    if (!this.ssl && this.startTls) {\n      await this.command('STARTTLS');\n      this.socket.removeAllListeners('data');\n      this.socket = tls.connect(this.tlsOptions({\n        socket: this.socket,\n      }));\n      this.attachSocket(this.socket);\n      await new Promise((resolve, reject) => {\n        this.socket.once('secureConnect', resolve);\n        this.socket.once('error', reject);\n      });\n    }\n  }\n\n  nextTag() {\n    this.tagCounter += 1;\n    return `A${String(this.tagCounter).padStart(4, '0')}`;\n  }\n\n  command(commandText, timeoutMs = 60000) {\n    const tag = this.nextTag();\n    this.socket.write(`${tag} ${commandText}\\r\\n`, 'binary');\n    const pattern = new RegExp(`(^|\\\\r\\\\n)${tag} (OK|NO|BAD)[^\\\\r\\\\n]*(\\\\r\\\\n|$)`);\n    return this.readWith((buffer) => {\n      const match = pattern.exec(buffer);\n      if (!match) return null;\n      const end = match.index + match[0].length;\n      const response = buffer.slice(0, end);\n      if (match[2] !== 'OK') throw new Error(`IMAP ${commandText} failed: ${response}`);\n      return { value: response, consumed: end };\n    }, timeoutMs);\n  }\n\n  async login(username, password) {\n    await this.command(`LOGIN ${quoteString(username)} ${quoteString(password)}`);\n  }\n\n  async select(mailbox) {\n    await this.command(`SELECT ${quoteString(mailbox)}`);\n  }\n\n  async mailboxExists(mailbox) {\n    const response = await this.command(`LIST \"\" ${quoteString(mailbox)}`);\n    return /\\* LIST /i.test(response);\n  }\n\n  async searchMessageId(mailbox, messageId) {\n    await this.select(mailbox);\n    const response = await this.command(`UID SEARCH HEADER Message-ID ${quoteString(messageId)}`);\n    return parseSearchResponse(response);\n  }\n\n  async logout() {\n    try {\n      await this.command('LOGOUT', 10000);\n    } finally {\n      this.socket?.end();\n    }\n  }\n}\n\nfunction quoteString(value) {\n  return `\"${String(value).replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"')}\"`;\n}\n\nfunction parseSearchResponse(response) {\n  const match = response.match(/\\* SEARCH([^\\r\\n]*)/i);\n  if (!match) return [];\n  return match[1].trim().split(/\\s+/).filter(Boolean);\n}\n\nfunction boolValue(value, fallback = false) {\n  if (value === undefined || value === null || value === '') return fallback;\n  if (typeof value === 'boolean') return value;\n  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());\n}\n\nfunction numberValue(value, fallback, description) {\n  const raw = value === undefined || value === null || value === '' ? fallback : value;\n  const parsed = Number(raw);\n  if (!Number.isFinite(parsed)) {\n    throw new Error(`${description} must be a number`);\n  }\n  return parsed;\n}\n\nfunction configValue(source, key, fallback) {\n  const value = source[key];\n  return value === undefined || value === null || value === '' ? fallback : value;\n}\n\nfunction envValue(name) {\n  try {\n    if (typeof $vars !== 'undefined' && $vars?.[name]) return $vars[name];\n  } catch {}\n  try {\n    if (typeof vars !== 'undefined' && vars?.[name]) return vars[name];\n  } catch {}\n  try {\n    if (typeof $env !== 'undefined' && $env?.[name]) return $env[name];\n  } catch {}\n  try {\n    if (typeof env !== 'undefined' && env?.[name]) return env[name];\n  } catch {}\n  return '';\n}\n\nfunction normalizeCredentialPair(item) {\n  const pair = item.credentialPair && typeof item.credentialPair === 'object'\n    ? item.credentialPair\n    : {};\n  const id = String(configValue(pair, 'id', item.credentialPairId || 'imap-1'));\n  const hostVar = String(configValue(pair, 'hostVar', configValue(item, 'hostVar', 'IMAP_HOST')));\n  const portVar = String(configValue(pair, 'portVar', configValue(item, 'portVar', 'IMAP_PORT')));\n\n  return {\n    id,\n    host: String(envValue(hostVar) || configValue(pair, 'host', configValue(item, 'imapHost', '192.168.3.200'))),\n    port: numberValue(\n      envValue(portVar) || configValue(pair, 'port', configValue(item, 'imapPort', 1143)),\n      1143,\n      `Credential pair ${id} port`,\n    ),\n    hostVar,\n    portVar,\n    ssl: boolValue(pair.ssl ?? pair.imapSsl, boolValue(item.imapSsl, false)),\n    startTls: boolValue(pair.startTls ?? pair.imapStartTls, boolValue(item.imapStartTls, true)),\n    allowUnauthorizedCerts: boolValue(\n      pair.allowUnauthorizedCerts,\n      boolValue(item.allowUnauthorizedCerts, true),\n    ),\n    userVar: String(configValue(pair, 'userVar', configValue(item, 'userVar', 'IMAP_USER'))),\n    passwordVar: String(configValue(pair, 'passwordVar', configValue(item, 'passwordVar', 'IMAP_PASSWORD'))),\n    labelPrefix: String(configValue(pair, 'labelPrefix', configValue(item, 'labelPrefix', 'Labels'))),\n    stateLabel: String(configValue(pair, 'stateLabel', configValue(item, 'stateLabel', 'Classified'))),\n  };\n}\n\nconst item = $input.first()?.json ?? {};\nconst messageId = String(\n  item.message_id\n    || item.messageId\n    || item['message-id']\n    || '',\n).trim();\n\nif (!messageId) {\n  return [{\n    json: {\n      ...item,\n      trigger_already_classified: false,\n      trigger_classified_check: 'skipped_missing_message_id',\n    },\n  }];\n}\n\nconst pair = normalizeCredentialPair(item);\nconst stateMailbox = `${pair.labelPrefix}/${pair.stateLabel}`;\nconst dryRun = boolValue(item.dryRun, false);\n\nif (dryRun) {\n  return [{\n    json: {\n      ...item,\n      trigger_already_classified: false,\n      trigger_classified_check: 'dry_run_not_checked',\n      trigger_classified_mailbox: stateMailbox,\n    },\n  }];\n}\n\nconst username = envValue(pair.userVar);\nconst password = envValue(pair.passwordVar);\nif (!username || !password) {\n  throw new Error(`Credential pair ${pair.id} requires n8n variables ${pair.userVar} and ${pair.passwordVar}.`);\n}\n\nconst client = new ImapClient({\n  host: envValue(pair.hostVar) || pair.host,\n  port: numberValue(envValue(pair.portVar) || pair.port, pair.port, `Credential pair ${pair.id} port`),\n  ssl: pair.ssl,\n  startTls: pair.startTls,\n  allowUnauthorizedCerts: pair.allowUnauthorizedCerts,\n});\n\ntry {\n  await client.connect();\n  await client.login(username, password);\n\n  if (!(await client.mailboxExists(stateMailbox))) {\n    return [{\n      json: {\n        ...item,\n        trigger_already_classified: false,\n        trigger_classified_check: 'state_mailbox_missing',\n        trigger_classified_mailbox: stateMailbox,\n      },\n    }];\n  }\n\n  const matches = await client.searchMessageId(stateMailbox, messageId);\n  if (matches.length > 0) {\n    return [];\n  }\n} finally {\n  await client.logout().catch(() => {});\n}\n\nreturn [{\n  json: {\n    ...item,\n    trigger_already_classified: false,\n    trigger_classified_check: 'not_classified',\n    trigger_classified_mailbox: stateMailbox,\n  },\n}];\n"
       }
     },
     {
@@ -426,17 +430,6 @@
     }
   ],
   "connections": {
-    "Manual Trigger": {
-      "main": [
-        [
-          {
-            "node": "Configure Proton IMAP batch",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Backfill Form Trigger": {
       "main": [
         [
@@ -514,7 +507,7 @@
       "main": [
         [
           {
-            "node": "Build classification prompt",
+            "node": "Skip classified trigger email",
             "type": "main",
             "index": 0
           }
@@ -610,6 +603,17 @@
         [
           {
             "node": "Expand fetched emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip classified trigger email": {
+      "main": [
+        [
+          {
+            "node": "Build classification prompt",
             "type": "main",
             "index": 0
           }

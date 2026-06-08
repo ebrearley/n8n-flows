@@ -50,10 +50,12 @@ class WorkflowJsonTests(unittest.TestCase):
 
         self.assertEqual(execute_nodes, [])
 
-    def test_backfill_form_trigger_starts_same_bulk_path(self):
+    def test_backfill_form_trigger_is_the_only_backfill_start(self):
         workflow = self.load_workflow()
         nodes = self.nodes_by_name()
 
+        self.assertNotIn("Manual Trigger", nodes)
+        self.assertNotIn("Manual Trigger", workflow["connections"])
         self.assertIn("Backfill Form Trigger", nodes)
         form_trigger = nodes["Backfill Form Trigger"]
         self.assertEqual(form_trigger["type"], "n8n-nodes-base.formTrigger")
@@ -62,10 +64,33 @@ class WorkflowJsonTests(unittest.TestCase):
             workflow["connections"]["Backfill Form Trigger"]["main"][0][0]["node"],
             "Configure Proton IMAP batch",
         )
+
+    def test_email_trigger_disables_last_message_tracking(self):
+        node = self.nodes_by_name()["Email Trigger (IMAP)"]
+
+        self.assertEqual(node["type"], "n8n-nodes-base.emailReadImap")
+        self.assertIs(node["parameters"]["options"]["trackLastMessageId"], False)
+
+    def test_trigger_path_skips_already_classified_messages_before_ai(self):
+        workflow = self.load_workflow()
+        nodes = self.nodes_by_name()
+
+        self.assertIn("Skip classified trigger email", nodes)
         self.assertEqual(
-            workflow["connections"]["Manual Trigger"]["main"][0][0]["node"],
-            "Configure Proton IMAP batch",
+            workflow["connections"]["Normalize trigger email"]["main"][0][0]["node"],
+            "Skip classified trigger email",
         )
+        self.assertEqual(
+            workflow["connections"]["Skip classified trigger email"]["main"][0][0]["node"],
+            "Build classification prompt",
+        )
+
+        guard_code = nodes["Skip classified trigger email"]["parameters"]["jsCode"]
+        self.assertIn("Labels", guard_code)
+        self.assertIn("Classified", guard_code)
+        self.assertIn("searchMessageId", guard_code)
+        self.assertIn("trigger_already_classified", guard_code)
+        self.assertIn("return []", guard_code)
 
     def test_configure_node_defines_credential_pair_list(self):
         assignments = self.configure_assignments()

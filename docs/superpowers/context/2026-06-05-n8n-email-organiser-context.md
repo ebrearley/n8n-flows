@@ -34,7 +34,7 @@ The workflow must not create labels, create folders, move messages, delete messa
 Bulk/backfill path:
 
 ```text
-Manual Trigger / Backfill Form Trigger
+Backfill Form Trigger
   -> Configure Proton IMAP batch
   -> Get next 50 unclassified emails
   -> Stop if no fetched emails
@@ -53,6 +53,7 @@ Trigger path:
 ```text
 Email Trigger (IMAP)
   -> Normalize trigger email
+  -> Skip classified trigger email
   -> Build classification prompt
   -> Classify with Ollama
   -> Prepare Proton label targets
@@ -115,8 +116,7 @@ No `enabled_tools` allow-list is configured, so Codex should expose all tools ad
 - If using Coolify runtime env vars rather than n8n variables, explicitly approve `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
 - Confirm all Proton labels exist under `Labels`, including `Labels/Classified`.
 - Confirm whether the live workflow should remain the step-telemetry export before importing local main.
-- Fix or retest the `Email Trigger (IMAP)` startup issue before relying on triggered classification.
-- Remove the editor-only `Manual Trigger` and keep `Backfill Form Trigger` only if the user still wants that cleanup.
+- Retest the `Email Trigger (IMAP)` startup issue after import. Current local main sets `trackLastMessageId=false` and routes trigger mail through `Skip classified trigger email`.
 - Keep `maxBatches=0` for full manual backfill; set it to a positive number only for deliberately capped test runs.
 - Keep `rawFetchByteLimit=65536` unless larger email body previews are needed for classification.
 - Keep `fetchWatchdogMs=120000` while setup is being debugged so slow IMAP fetch stages fail visibly.

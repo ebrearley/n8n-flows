@@ -21,7 +21,7 @@ The workflow has two entry points.
 Bulk pass:
 
 ```text
-Manual Trigger / Backfill Form Trigger
+Backfill Form Trigger
   -> Configure Proton IMAP batch
   -> Get next 50 unclassified emails
   -> Stop if no fetched emails
@@ -39,6 +39,7 @@ Live trigger:
 ```text
 Email Trigger (IMAP)
   -> Normalize trigger email
+  -> Skip classified trigger email
   -> Build classification prompt
   -> Classify with Ollama
   -> Prepare Proton label targets
@@ -49,7 +50,9 @@ Classification happens in the visible n8n AI Agent node `Classify with Ollama`, 
 
 The current workflow uses n8n JavaScript Code nodes for IMAP fetch and label application. The Python helper is retained as legacy local test coverage only.
 
-The latest user preference was to remove the editor-only `Manual Trigger` and keep the `Backfill Form Trigger`. Confirm the current checkout before assuming that has been implemented; as of the 2026-06-08 handoff, local main still contained both.
+The editor-only `Manual Trigger` has been removed from the current export. Use `Backfill Form Trigger` for explicit backfill starts.
+
+The `Email Trigger (IMAP)` export has `trackLastMessageId=false` to avoid the n8n 2.23.x first-activation `SINCE` search issue seen during setup. Because that can cause old unread messages to be emitted, the trigger path runs `Skip classified trigger email` before the AI node and drops messages whose `Message-ID` already exists in `Labels/Classified`.
 
 ## Telemetry And Status Dashboard
 
