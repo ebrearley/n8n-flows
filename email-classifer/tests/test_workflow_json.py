@@ -93,10 +93,14 @@ const $input = {{
         self.assertEqual(form_trigger["parameters"]["path"], "email-organiser-backfill")
         self.assertEqual(
             workflow["connections"]["Backfill Form Trigger"]["main"][0][0]["node"],
-            "Configure Proton IMAP batch",
+            "Telemetry start run",
         )
         self.assertEqual(
             workflow["connections"]["Manual Trigger"]["main"][0][0]["node"],
+            "Telemetry start run",
+        )
+        self.assertEqual(
+            workflow["connections"]["Telemetry restore step start: Configure batch"]["main"][0][0]["node"],
             "Configure Proton IMAP batch",
         )
 
@@ -286,6 +290,10 @@ const json = {
         )
         self.assertEqual(
             workflow["connections"]["Fetched emails?"]["main"][0][0]["node"],
+            "Telemetry start step: Expand fetched emails",
+        )
+        self.assertEqual(
+            workflow["connections"]["Telemetry restore step start: Expand fetched emails"]["main"][0][0]["node"],
             "Expand fetched emails",
         )
         self.assertEqual(
@@ -432,9 +440,21 @@ const json = {
         nodes = self.nodes_by_name()
         trigger_nodes = {node["name"]: node for node in trigger_export["nodes"]}
         expected_stages = {
+            "Start run": {
+                "node": "Telemetry restore start payload",
+                "sort": 10,
+            },
+            "Configure batch": {
+                "node": "Configure Proton IMAP batch",
+                "sort": 20,
+            },
             "Fetch next unclassified emails": {
                 "node": "Get next 50 unclassified emails",
                 "sort": 30,
+            },
+            "Expand fetched emails": {
+                "node": "Expand fetched emails",
+                "sort": 40,
             },
             "Build classification prompt": {
                 "node": "Build classification prompt",
@@ -451,6 +471,10 @@ const json = {
             "Apply Proton labels": {
                 "node": "Apply Proton labels",
                 "sort": 80,
+            },
+            "Apply Proton labels (trigger)": {
+                "node": "Apply Proton labels (trigger)",
+                "sort": 85,
             },
             "Finish run": {
                 "node": "Telemetry finish run",
@@ -582,7 +606,26 @@ const json = {
                     options["queryReplacement"],
                     "={{ $json.telemetry_step_finish_params }}",
                 )
-                self.assertIn("SELECT $6::int AS source_index", query)
+                self.assertIn("WHEN EXISTS (SELECT 1 FROM updated)", query)
+                self.assertIn("THEN $6::int", query)
+                self.assertIn("1 / (SELECT count(*)::int FROM updated)", query)
+
+        self.assertEqual(
+            workflow["connections"]["From bulk loop?"]["main"][1][0]["node"],
+            "Telemetry start step: Apply Proton labels (trigger)",
+        )
+        self.assertEqual(
+            workflow["connections"]["Telemetry restore step start: Apply Proton labels (trigger)"]["main"][0][0]["node"],
+            "Apply Proton labels (trigger)",
+        )
+        self.assertEqual(
+            workflow["connections"]["Apply Proton labels (trigger)"]["main"][0][0]["node"],
+            "Telemetry finish step: Apply Proton labels (trigger)",
+        )
+        self.assertEqual(
+            workflow["connections"]["Telemetry restore step finish: Apply Proton labels (trigger)"]["main"][0][0]["node"],
+            "Telemetry build label actions (trigger)",
+        )
 
     def test_telemetry_postgres_nodes_stop_on_error_during_setup(self):
         for node in self.load_workflow()["nodes"]:
@@ -647,11 +690,27 @@ const json = {
         connections = workflow["connections"]
 
         self.assertEqual(
-            connections["Configure Proton IMAP batch"]["main"][0][0]["node"],
+            connections["Manual Trigger"]["main"][0][0]["node"],
             "Telemetry start run",
         )
         self.assertEqual(
-            connections["Telemetry restore start payload"]["main"][0][0]["node"],
+            connections["Telemetry upsert workflow and run"]["main"][0][0]["node"],
+            "Telemetry start step: Start run",
+        )
+        self.assertEqual(
+            connections["Telemetry restore step start: Start run"]["main"][0][0]["node"],
+            "Telemetry restore start payload",
+        )
+        self.assertEqual(
+            connections["Telemetry restore step finish: Start run"]["main"][0][0]["node"],
+            "Telemetry start step: Configure batch",
+        )
+        self.assertEqual(
+            connections["Telemetry restore step start: Configure batch"]["main"][0][0]["node"],
+            "Configure Proton IMAP batch",
+        )
+        self.assertEqual(
+            connections["Telemetry restore step finish: Configure batch"]["main"][0][0]["node"],
             "Telemetry start step: Fetch next unclassified emails",
         )
         self.assertEqual(

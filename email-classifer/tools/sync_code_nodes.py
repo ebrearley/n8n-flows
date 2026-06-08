@@ -30,12 +30,20 @@ NODE_CODE = {
 }
 
 STEP_STAGE_SORT_ORDERS = {
+    "Start run": 10,
+    "Configure batch": 20,
     "Fetch next unclassified emails": 30,
+    "Expand fetched emails": 40,
     "Build classification prompt": 50,
     "Classify with Ollama": 60,
     "Prepare Proton label targets": 70,
     "Apply Proton labels": 80,
+    "Apply Proton labels (trigger)": 85,
     "Finish run": 100,
+}
+
+STEP_STAGES_THAT_PARSE_PAYLOAD_JSON = {
+    "Start run",
 }
 
 
@@ -57,8 +65,34 @@ def code_with_step_defaults(name: str, code: str) -> str:
     if sort_order is None:
         return code
 
+    parse_payload_json = stage in STEP_STAGES_THAT_PARSE_PAYLOAD_JSON
     source_line = "  const item = inputItem.json ?? {};"
-    replacement = """  const sourceItem = inputItem.json ?? {};
+    if parse_payload_json:
+        prefix_code = """function telemetryPayload(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return null;
+  }
+}
+
+"""
+        replacement = """  const rawSourceItem = inputItem.json ?? {};
+  const parsedSourceItem = telemetryPayload(rawSourceItem.payload_json ?? rawSourceItem.payloadJson ?? rawSourceItem.payload);
+  const sourceItem = parsedSourceItem && typeof parsedSourceItem === 'object'
+    ? parsedSourceItem
+    : rawSourceItem;
+  const item = {
+    ...sourceItem,
+    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,
+    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,
+    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,
+  };"""
+    else:
+        prefix_code = ""
+        replacement = """  const sourceItem = inputItem.json ?? {};
   const item = {
     ...sourceItem,
     telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,
@@ -72,6 +106,7 @@ def code_with_step_defaults(name: str, code: str) -> str:
         f"const TELEMETRY_STEP_NAME = {json.dumps(stage)};\n"
         "const TELEMETRY_STEP_TYPE = 'n8n-stage';\n"
         f"const TELEMETRY_STEP_SORT_ORDER = {sort_order};\n\n"
+        + prefix_code
         + code.replace(source_line, replacement)
     )
 

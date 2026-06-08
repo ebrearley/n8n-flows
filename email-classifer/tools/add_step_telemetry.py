@@ -13,9 +13,25 @@ WORKFLOW_PATHS = (
 
 STAGES = [
     {
+        "stage": "Start run",
+        "node": "Telemetry restore start payload",
+        "sort": 10,
+        "parse_payload_json": True,
+    },
+    {
+        "stage": "Configure batch",
+        "node": "Configure Proton IMAP batch",
+        "sort": 20,
+    },
+    {
         "stage": "Fetch next unclassified emails",
         "node": "Get next 50 unclassified emails",
         "sort": 30,
+    },
+    {
+        "stage": "Expand fetched emails",
+        "node": "Expand fetched emails",
+        "sort": 40,
     },
     {
         "stage": "Build classification prompt",
@@ -36,6 +52,11 @@ STAGES = [
         "stage": "Apply Proton labels",
         "node": "Apply Proton labels",
         "sort": 80,
+    },
+    {
+        "stage": "Apply Proton labels (trigger)",
+        "node": "Apply Proton labels (trigger)",
+        "sort": 85,
     },
     {
         "stage": "Finish run",
@@ -76,7 +97,10 @@ UPDATE_STEP_QUERY = """WITH updated AS (
   WHERE id = NULLIF($1, '')::uuid
   RETURNING id
 )
-SELECT $6::int AS source_index;"""
+SELECT CASE
+  WHEN EXISTS (SELECT 1 FROM updated) THEN $6::int
+  ELSE 1 / (SELECT count(*)::int FROM updated)
+END AS source_index;"""
 
 
 def generated_name(name: str) -> bool:
@@ -106,14 +130,43 @@ def read_code(filename: str) -> str:
     return (ROOT / "code-nodes" / filename).read_text(encoding="utf-8")
 
 
-def start_step_code(stage: str, sort_order: int, base_code: str) -> str:
+def start_step_code(
+    stage: str,
+    sort_order: int,
+    base_code: str,
+    parse_payload_json: bool = False,
+) -> str:
     defaults = f"""const TELEMETRY_STEP_NAME = {json.dumps(stage)};
 const TELEMETRY_STEP_TYPE = 'n8n-stage';
 const TELEMETRY_STEP_SORT_ORDER = {sort_order};
 
 """
     source_line = "  const item = inputItem.json ?? {};"
-    replacement = """  const sourceItem = inputItem.json ?? {};
+    if parse_payload_json:
+        defaults += """function telemetryPayload(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return null;
+  }
+}
+
+"""
+        replacement = """  const rawSourceItem = inputItem.json ?? {};
+  const parsedSourceItem = telemetryPayload(rawSourceItem.payload_json ?? rawSourceItem.payloadJson ?? rawSourceItem.payload);
+  const sourceItem = parsedSourceItem && typeof parsedSourceItem === 'object'
+    ? parsedSourceItem
+    : rawSourceItem;
+  const item = {
+    ...sourceItem,
+    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,
+    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,
+    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,
+  };"""
+    else:
+        replacement = """  const sourceItem = inputItem.json ?? {};
   const item = {
     ...sourceItem,
     telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,
@@ -259,6 +312,13 @@ def unwrap_stage_connections(workflow: dict) -> None:
     remove_generated_connections(workflow)
 
 
+def normalize_bulk_run_start(connections: dict) -> None:
+    set_main_connection(connections, "Manual Trigger", "Telemetry start run")
+    set_main_connection(connections, "Backfill Form Trigger", "Telemetry start run")
+    set_main_connection(connections, "Telemetry restore start payload", "Configure Proton IMAP batch")
+    set_main_connection(connections, "Configure Proton IMAP batch", "Get next 50 unclassified emails")
+
+
 def target_position(workflow: dict, target_name: str) -> tuple[int, int]:
     for node in workflow["nodes"]:
         if node["name"] == target_name:
@@ -294,7 +354,12 @@ def append_stage_nodes(workflow: dict) -> None:
                 code_node(
                     names["start"],
                     positions["start"],
-                    start_step_code(stage, stage_config["sort"], start_code),
+                    start_step_code(
+                        stage,
+                        stage_config["sort"],
+                        start_code,
+                        parse_payload_json=stage_config.get("parse_payload_json", False),
+                    ),
                 ),
                 postgres_node(
                     names["record"],
@@ -357,6 +422,7 @@ def add_step_telemetry(path: Path) -> None:
     workflow = json.loads(path.read_text(encoding="utf-8"))
     unwrap_stage_connections(workflow)
     remove_generated_nodes(workflow)
+    normalize_bulk_run_start(workflow.setdefault("connections", {}))
     append_stage_nodes(workflow)
     instrument_stage_connections(workflow)
     path.write_text(json.dumps(workflow, indent=2) + "\n", encoding="utf-8")
