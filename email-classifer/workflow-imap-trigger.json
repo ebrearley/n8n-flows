@@ -902,6 +902,21 @@
       }
     },
     {
+      "id": "96130156-3105-5c31-aed8-9e7682cd3c59",
+      "name": "Prepare next fetch control item",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        -160
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function safeObject(value) {\n  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};\n}\n\nfunction lookupConfig() {\n  try {\n    const lookup = $('Configure Proton IMAP batch');\n    if (lookup && typeof lookup.first === 'function') {\n      const first = lookup.first();\n      if (first?.json) return first.json;\n    }\n    if (lookup && typeof lookup.all === 'function') {\n      const all = lookup.all();\n      if (all?.[0]?.json) return all[0].json;\n    }\n    if (lookup?.item?.json) return lookup.item.json;\n  } catch {}\n  return {};\n}\n\nfunction configuredValue(configured, current, key, fallback = undefined) {\n  if (configured[key] !== undefined && configured[key] !== null && configured[key] !== '') {\n    return configured[key];\n  }\n  if (current[key] !== undefined && current[key] !== null && current[key] !== '') {\n    return current[key];\n  }\n  return fallback;\n}\n\nfunction copyField(target, configured, current, key, fallback = undefined) {\n  const value = configuredValue(configured, current, key, fallback);\n  if (value !== undefined && value !== null && value !== '') target[key] = value;\n}\n\nconst current = $input.first()?.json ?? {};\nconst configured = lookupConfig();\nconst configuredTelemetry = safeObject(configured.telemetry);\nconst currentTelemetry = safeObject(current.telemetry);\nconst telemetrySource = Object.keys(configuredTelemetry).length > 0\n  ? configuredTelemetry\n  : currentTelemetry;\n\nconst control = {\n  runMode: 'fetch_batch',\n  sourceFlow: 'bulk',\n  telemetry: telemetrySource,\n  run_id: telemetrySource.run_id || configuredValue(configured, current, 'run_id', ''),\n  run_key: telemetrySource.run_key || configuredValue(configured, current, 'run_key', ''),\n  workflow_id: telemetrySource.workflow_id || configuredValue(configured, current, 'workflow_id', ''),\n  workflow_name: telemetrySource.workflow_name || configuredValue(configured, current, 'workflow_name', ''),\n  execution_id: telemetrySource.execution_id || configuredValue(configured, current, 'execution_id', ''),\n};\n\nfor (const key of [\n  'batchLimit',\n  'maxBatches',\n  'imapHost',\n  'imapPort',\n  'imapSsl',\n  'imapStartTls',\n  'sourceMailbox',\n  'labelPrefix',\n  'stateLabel',\n  'dryRun',\n  'rawFetchByteLimit',\n  'fetchWatchdogMs',\n  'uidSearchWindow',\n  'imapPairsJson',\n]) {\n  copyField(control, configured, current, key);\n}\n\nreturn [{ json: control }];\n"
+      }
+    },
+    {
       "id": "a9e0fc57-eb9e-54ed-a921-399c7b621e40",
       "name": "Telemetry start step: Start run",
       "type": "n8n-nodes-base.code",
@@ -2042,7 +2057,7 @@
       "main": [
         [
           {
-            "node": "Telemetry start step: Fetch next unclassified emails",
+            "node": "Prepare next fetch control item",
             "type": "main",
             "index": 0
           }
@@ -2449,6 +2464,17 @@
         [
           {
             "node": "Telemetry update finished run (trigger)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare next fetch control item": {
+      "main": [
+        [
+          {
+            "node": "Telemetry start step: Fetch next unclassified emails",
             "type": "main",
             "index": 0
           }

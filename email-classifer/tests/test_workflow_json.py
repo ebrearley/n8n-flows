@@ -362,6 +362,65 @@ const json = {
             "Telemetry finish run",
         )
 
+    def test_loop_done_path_collapses_to_one_control_item_before_next_fetch(self):
+        workflow = self.load_workflow()
+        nodes = self.nodes_by_name()
+
+        self.assertIn("Prepare next fetch control item", nodes)
+        self.assertEqual(
+            workflow["connections"]["Loop Over Emails"]["main"][0][0]["node"],
+            "Prepare next fetch control item",
+        )
+        self.assertEqual(
+            workflow["connections"]["Prepare next fetch control item"]["main"][0][0]["node"],
+            "Telemetry start step: Fetch next unclassified emails",
+        )
+
+        code = nodes["Prepare next fetch control item"]["parameters"]["jsCode"]
+        self.assertIn("$input.first()?.json", code)
+        self.assertIn("return [{", code)
+        self.assertIn("telemetry: telemetrySource", code)
+        self.assertNotIn("email_body", code)
+        self.assertNotIn("body_preview", code)
+
+        result = self.run_workflow_code_node(
+            "Prepare next fetch control item",
+            [
+                {
+                    "json": {
+                        "email_subject": "private subject",
+                        "email_body": "private body",
+                        "batchLimit": 50,
+                        "telemetry": {"run_id": "run-from-email"},
+                    },
+                },
+                {
+                    "json": {
+                        "email_subject": "another private subject",
+                        "email_body": "another private body",
+                    },
+                },
+            ],
+            {
+                "Configure Proton IMAP batch": [
+                    {
+                        "json": {
+                            "batchLimit": 50,
+                            "maxBatches": 3,
+                            "imapPairsJson": "[]",
+                            "telemetry": {"run_id": "run-from-config"},
+                        },
+                    },
+                ],
+            },
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["json"]["telemetry"]["run_id"], "run-from-config")
+        self.assertEqual(result[0]["json"]["batchLimit"], 50)
+        self.assertEqual(result[0]["json"]["maxBatches"], 3)
+        self.assertNotIn("email_subject", result[0]["json"])
+        self.assertNotIn("email_body", result[0]["json"])
+
     def test_tls_servername_is_not_set_for_ip_hosts(self):
         nodes = self.nodes_by_name()
 

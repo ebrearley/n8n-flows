@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 NODE_CODE = {
     "Get next 50 unclassified emails": "get_next_50_unclassified_emails.js",
+    "Prepare next fetch control item": "prepare_next_fetch_control_item.js",
     "Stop if no fetched emails": "stop_if_no_fetched_emails.js",
     "Normalize trigger email": "normalize_trigger_email.js",
     "Prepare Proton label targets": "prepare_proton_label_targets.js",
