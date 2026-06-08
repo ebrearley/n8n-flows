@@ -3,8 +3,20 @@
     {
       "label": "Account notification",
       "status": "candidate",
-      "source": "Aggregate sanitized telemetry from execution 58: one suggested_labels occurrence across 150 classified emails.",
+      "source": "Aggregate sanitized telemetry from execution 58: one suggested_labels occurrence across 150 classified emails. Aggregate sanitized telemetry from execution 60 while still running: 10 Account Notification occurrences across 522 classified emails.",
       "prompt_suggestion": "Use suggested_labels for emails that are primarily account, security, policy, or service notifications and are not confidently covered by existing allowed labels. Do not add this to labels unless the Proton label exists and the allowed-label list is updated."
+    },
+    {
+      "label": "Statement",
+      "status": "candidate",
+      "source": "Aggregate sanitized telemetry from execution 60 while still running: 11 suggested_labels occurrences across 522 classified emails.",
+      "prompt_suggestion": "Use suggested_labels for account, bank, service, or provider statements that are not clearly invoices, bills, purchases, or payments. Do not add this to labels unless the Proton label exists and the allowed-label list is updated."
+    },
+    {
+      "label": "Account/Security",
+      "status": "candidate",
+      "source": "Aggregate sanitized telemetry from execution 60 while still running: 4 suggested_labels occurrences across 522 classified emails.",
+      "prompt_suggestion": "Use suggested_labels for account access, login, password, security alert, or identity verification emails that are not confidently covered by Important or Infrastructure. Do not add this to labels unless the Proton label exists and the allowed-label list is updated."
     }
   ],
   "review_policy": "Review candidate frequency and examples through sanitized telemetry before adding a new allowed label or Proton mailbox."
