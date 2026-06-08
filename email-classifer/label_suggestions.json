@@ -1,0 +1,11 @@
+{
+  "observed_missing_label_candidates": [
+    {
+      "label": "Account notification",
+      "status": "candidate",
+      "source": "Aggregate sanitized telemetry from execution 58: one suggested_labels occurrence across 150 classified emails.",
+      "prompt_suggestion": "Use suggested_labels for emails that are primarily account, security, policy, or service notifications and are not confidently covered by existing allowed labels. Do not add this to labels unless the Proton label exists and the allowed-label list is updated."
+    }
+  ],
+  "review_policy": "Review candidate frequency and examples through sanitized telemetry before adding a new allowed label or Proton mailbox."
+}

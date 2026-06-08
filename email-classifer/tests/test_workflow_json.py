@@ -1064,6 +1064,17 @@ const $input = {
         self.assertIn("do not put suggested labels in `labels`", value)
         self.assertIn("strict JSON", value)
 
+    def test_observed_missing_label_candidates_are_recorded_in_code(self):
+        suggestions = json.loads((ROOT / "label_suggestions.json").read_text(encoding="utf-8"))
+        candidates = suggestions["observed_missing_label_candidates"]
+
+        account_notification = next(
+            candidate for candidate in candidates if candidate["label"] == "Account notification"
+        )
+        self.assertEqual(account_notification["status"], "candidate")
+        self.assertIn("suggested_labels", account_notification["prompt_suggestion"])
+        self.assertIn("Do not add this to labels", account_notification["prompt_suggestion"])
+
     def test_prepare_targets_records_suggested_labels_without_targets(self):
         script = r"""
 const fs = require('fs');
