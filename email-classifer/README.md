@@ -12,6 +12,8 @@ The directory name intentionally matches the requested spelling: `email-classife
 - `email_classifier.py`: legacy Python helper retained for unit-tested behavior references.
 - `tests/`: unit tests for classifier helper behavior.
 
+Read the root `AGENTS.md` and `docs/superpowers/context/2026-06-08-agent-handoff-context.md` before importing or executing against the live mailbox. They record live IDs, credential references, telemetry branch state, and privacy constraints from the setup session.
+
 ## Runtime Shape
 
 The workflow has two entry points.
@@ -19,7 +21,7 @@ The workflow has two entry points.
 Bulk pass:
 
 ```text
-Manual Trigger
+Manual Trigger / Backfill Form Trigger
   -> Configure Proton IMAP batch
   -> Get next 50 unclassified emails
   -> Stop if no fetched emails
@@ -47,6 +49,26 @@ Classification happens in the visible n8n AI Agent node `Classify with Ollama`, 
 
 The current workflow uses n8n JavaScript Code nodes for IMAP fetch and label application. The Python helper is retained as legacy local test coverage only.
 
+The latest user preference was to remove the editor-only `Manual Trigger` and keep the `Backfill Form Trigger`. Confirm the current checkout before assuming that has been implemented; as of the 2026-06-08 handoff, local main still contained both.
+
+## Telemetry And Status Dashboard
+
+This repository is closely related to `/home/eric/source/n8n-workflow-status`, a private Next.js dashboard at:
+
+```text
+https://n8n-workflow-status.home.brearley.net
+```
+
+The status app reads the separate `workflow_status` Postgres database and displays workflow runs, current step, step input/output/error JSON, AI model/token usage, label actions, and errors.
+
+Important state split:
+
+- local main currently has the smaller workflow export without generated step telemetry nodes;
+- `feature/workflow-telemetry-status` and `.worktrees/workflow-telemetry-status` contain the 103-node step telemetry workflow;
+- the last live n8n validation used the telemetry workflow and left it inactive.
+
+Do not import the smaller local main export over live n8n unless the user confirms step telemetry can be removed.
+
 ## Proton Labels
 
 Proton exposes UI labels through IMAP as mailboxes nested under the top-level `Labels` mailbox. The workflow therefore applies labels as:
@@ -67,7 +89,9 @@ The live `Email Trigger (IMAP)` node uses the credential assigned in n8n.
 
 The bulk fetch and label-application Code nodes cannot read the `Email Trigger (IMAP)` credential secrets directly, so each IMAP account is configured as an entry in `imapPairsJson` on `Configure Proton IMAP batch`.
 
-During setup, `Configure Proton IMAP batch` sets `maxBatches=1` so one manual execution processes at most one 50-email batch. Set `maxBatches=0` only when you are ready for the manual workflow to keep fetching batches until the inbox is classified.
+`Configure Proton IMAP batch` sets `maxBatches=0`, so the manual workflow keeps fetching 50-email batches until the inbox is classified. Set `maxBatches` to a positive number only when you want a deliberately capped test run.
+
+The bulk fetch node reads only selected IMAP header fields and caps each raw message preview at `rawFetchByteLimit` bytes, defaulting to `65536`. It scans source mailboxes in bounded UID ranges using `uidSearchWindow=500`, and checks candidate Message-IDs against `Labels/Classified` only as needed. `fetchWatchdogMs` defaults to `120000` and stops the fetch with stage counters if the first batch cannot be prepared in time.
 
 Each credential pair names the variables that hold its username and password:
 
@@ -84,7 +108,10 @@ Each credential pair names the variables that hold its username and password:
     "passwordVar": "IMAP_1_PASSWORD",
     "sourceMailboxes": ["INBOX"],
     "labelPrefix": "Labels",
-    "stateLabel": "Classified"
+    "stateLabel": "Classified",
+    "rawFetchByteLimit": 65536,
+    "fetchWatchdogMs": 120000,
+    "uidSearchWindow": 500
   }
 ]
 ```
@@ -117,9 +144,11 @@ Import the workflow JSON into n8n:
 n8n import:workflow --input=email-classifer/workflow.json
 ```
 
-Copy `email_classifier.py` to the path configured by `EMAIL_CLASSIFIER_SCRIPT` on the n8n host.
-
 Assign the IMAP credential to `Email Trigger (IMAP)` and configure the Ollama account/endpoint on `Ollama Chat Model` if n8n asks for it.
+
+For the live n8n instance, use the safer import procedure in root `AGENTS.md`: inject the workflow ID and credential references into a temporary import JSON, import with `active=false`, publish, leave inactive until ready, then restart n8n.
+
+Avoid pasting `n8n execute` output into chat or docs. The CLI can print private email content even without `--rawOutput`; validate through sanitized `workflow_status` rows instead.
 
 ## Queueing
 
@@ -150,6 +179,8 @@ Default labels:
 - `Ticket`
 - `Infrastructure`
 - `Hustle`
+- `Schedule`
+- `Spam like`
 
 ## Local Tests
 

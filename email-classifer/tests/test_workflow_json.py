@@ -50,10 +50,30 @@ class WorkflowJsonTests(unittest.TestCase):
 
         self.assertEqual(execute_nodes, [])
 
+    def test_backfill_form_trigger_starts_same_bulk_path(self):
+        workflow = self.load_workflow()
+        nodes = self.nodes_by_name()
+
+        self.assertIn("Backfill Form Trigger", nodes)
+        form_trigger = nodes["Backfill Form Trigger"]
+        self.assertEqual(form_trigger["type"], "n8n-nodes-base.formTrigger")
+        self.assertEqual(form_trigger["parameters"]["path"], "email-organiser-backfill")
+        self.assertEqual(
+            workflow["connections"]["Backfill Form Trigger"]["main"][0][0]["node"],
+            "Configure Proton IMAP batch",
+        )
+        self.assertEqual(
+            workflow["connections"]["Manual Trigger"]["main"][0][0]["node"],
+            "Configure Proton IMAP batch",
+        )
+
     def test_configure_node_defines_credential_pair_list(self):
         assignments = self.configure_assignments()
         self.assertIn("imapPairsJson", assignments)
-        self.assertEqual(assignments["maxBatches"]["value"], 1)
+        self.assertEqual(assignments["maxBatches"]["value"], 0)
+        self.assertEqual(assignments["rawFetchByteLimit"]["value"], 65536)
+        self.assertEqual(assignments["fetchWatchdogMs"]["value"], 120000)
+        self.assertEqual(assignments["uidSearchWindow"]["value"], 500)
 
         pairs = json.loads(assignments["imapPairsJson"]["value"])
         self.assertIsInstance(pairs, list)
@@ -115,16 +135,91 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("recipient_email", trigger_code)
         self.assertIn("...item", apply_code)
 
+    def test_trigger_items_include_first_imap_credential_pair_metadata(self):
+        code = self.nodes_by_name()["Normalize trigger email"]["parameters"]["jsCode"]
+
+        self.assertIn("credentialPair", code)
+        self.assertIn("IMAP_1_USER", code)
+        self.assertIn("IMAP_1_PASSWORD", code)
+        self.assertIn("IMAP_1_HOST", code)
+        self.assertIn("IMAP_1_PORT", code)
+
+    def test_trigger_normalizer_uses_imap_metadata_uid_message_id_and_html_body(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Normalize trigger email').parameters.jsCode;
+const json = {
+  attributes: { uid: 42 },
+  metadata: { 'message-id': '<trigger-message@example.test>' },
+  from: '"Example" <sender@example.test>',
+  to: '<recipient@example.test>',
+  subject: 'Calendar invitation',
+  textPlain: '',
+  textHtml: '<p>Meet at 4pm in Brunswick.</p>',
+};
+
+(async () => {
+  const result = await new AsyncFunction('$json', code)(json);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["uid"], "42")
+        self.assertEqual(result["message_id"], "<trigger-message@example.test>")
+        self.assertIn("Meet at 4pm", result["email_body"])
+
     def test_fetch_checks_classified_state_with_headers_before_fetching_body(self):
         code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
 
         self.assertIn("fetchHeaders", code)
-        self.assertIn("BODY.PEEK[HEADER]", code)
+        self.assertIn("BODY.PEEK[HEADER.FIELDS", code)
         self.assertLess(code.index("fetchHeaders(uid"), code.index("fetchRaw(uid"))
 
-    def test_fetch_has_setup_batch_limit_to_prevent_unbounded_manual_runs(self):
+    def test_fetch_limits_imap_header_and_body_payloads(self):
         code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
 
+        self.assertIn("SOURCE_HEADER_FIELDS", code)
+        self.assertIn("MESSAGE_ID_HEADER_FIELDS", code)
+        self.assertIn("BODY.PEEK[]<0.", code)
+        self.assertIn("rawFetchByteLimit", code)
+
+    def test_fetch_has_watchdog_with_stage_progress(self):
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        self.assertIn("fetchWatchdogMs", code)
+        self.assertIn("Fetch watchdog exceeded", code)
+        self.assertIn("progress.stage", code)
+        self.assertIn("JSON.stringify(progress)", code)
+
+    def test_fetch_scans_source_by_bounded_uid_ranges_before_fetching_candidates(self):
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        self.assertIn("uidNext", code)
+        self.assertIn("searchUidRange", code)
+        self.assertIn("uidSearchWindow", code)
+        self.assertIn("searchMessageId(stateMailbox", code)
+        self.assertIn("fetchHeadersForUids", code)
+        self.assertNotIn("searchAll(sourceMailbox", code)
+        self.assertNotIn("fetchMessageIds(stateMailbox", code)
+
+    def test_fetch_supports_optional_batch_limit_without_capping_manual_backfill(self):
+        assignments = self.configure_assignments()
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        self.assertEqual(assignments["maxBatches"]["value"], 0)
         self.assertIn("maxBatches", code)
         self.assertIn("max_batches_reached", code)
         self.assertIn("runIndex >= defaults.maxBatches", code)
@@ -164,6 +259,72 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("$json.sender_email", value)
         self.assertIn("$json.email_body", value)
         self.assertNotIn("{{ $json.sender_email }}", value)
+
+    def test_system_prompt_includes_schedule_and_spam_like_labels(self):
+        assignments = self.build_prompt_assignments()
+        value = assignments["systemPrompt"]["value"]
+
+        self.assertIn("`Schedule`", value)
+        self.assertIn("calendar invitation", value)
+        self.assertIn("time and place to be", value)
+        self.assertIn("`Spam like`", value)
+        self.assertIn("spam or junk mail", value)
+
+    def test_prepare_targets_accepts_schedule_and_spam_like_labels(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '3542',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [
+      { label: 'Schedule', confidence: 0.91 },
+      { label: 'Spam like', confidence: 0.88 },
+    ],
+    reason: 'Calendar event notification that also resembles junk mail',
+  }),
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(
+            result["labels"],
+            [
+                {"label": "Schedule", "confidence": 0.91},
+                {"label": "Spam like", "confidence": 0.88},
+            ],
+        )
+        self.assertEqual(
+            result["targetMailboxes"],
+            ["Labels/Schedule", "Labels/Spam like", "Labels/Classified"],
+        )
 
     def test_ollama_model_uses_installed_name(self):
         nodes = self.nodes_by_name()

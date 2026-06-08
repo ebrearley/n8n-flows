@@ -40,6 +40,8 @@ DEFAULT_SYSTEM_PROMPT = """You are an email triage assistant. Given one email, a
 - `Ticket` — tickets to music festivals, bands, concerts, etc.
 - `Infrastructure` — metric updates, error reporting from services or devices
 - `Hustle` — correspondence with people or businesses engaging me for professional work
+- `Schedule` — calendar invitations and calendar notifications, or anything with a time and place to be, like a wedding, meeting with friends, or work meeting
+- `Spam like` — emails that look like spam or junk mail
 
 ## Schema
 Output **only** JSON matching this shape, nothing else:
@@ -132,6 +134,16 @@ Email: "Alert: API error rate exceeded 5% on prod-server-2 in the last 10 minute
 Email: "Following up on the 3-day shoot — can you confirm the rates work for you?"
 ```json
 {"labels": [{"label": "Hustle", "confidence": 0.86}, {"label": "Awaiting reply", "confidence": 0.84}], "reason": "Business engaging me for professional work and awaiting my response"}
+```
+
+Email: "Calendar invitation: Alex and Priya's wedding, Saturday 4pm at Brunswick Town Hall."
+```json
+{"labels": [{"label": "Schedule", "confidence": 0.92}], "reason": "Invitation with a specific time and place to be"}
+```
+
+Email: "Congratulations winner! Click here to claim your prize before it expires."
+```json
+{"labels": [{"label": "Spam like", "confidence": 0.90}], "reason": "Message resembles junk mail with a suspicious prize claim"}
 ```"""
 
 DEFAULT_USER_PROMPT_TEMPLATE = """From: {{ $json.sender_email }}
@@ -154,6 +166,8 @@ DEFAULT_LABELS = [
     "Ticket",
     "Infrastructure",
     "Hustle",
+    "Schedule",
+    "Spam like",
     "uncertain",
 ]
 
