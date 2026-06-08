@@ -15,7 +15,7 @@ function extractJsonText(value) {
 
 function parseAiOutput(value) {
   if (value && typeof value === 'object') {
-    if (Array.isArray(value.labels)) return value;
+    if (Array.isArray(value.labels) || Array.isArray(value.suggested_labels)) return value;
     if ('output' in value) return parseAiOutput(value.output);
   }
   if (typeof value === 'string') return JSON.parse(extractJsonText(value));
@@ -43,7 +43,9 @@ try {
 }
 
 const labels = Array.isArray(parsed?.labels) ? parsed.labels : [];
-const status = labels.some((item) => item?.label === 'uncertain') ? 'uncertain' : 'success';
+const status = labels.length === 0 || labels.some((item) => item?.label === 'uncertain')
+  ? 'uncertain'
+  : 'success';
 const model = 'odytrice/gemma4-26b:4090';
 const item = {
   ...source,

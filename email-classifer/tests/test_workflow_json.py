@@ -964,6 +964,274 @@ const $input = {
         self.assertIn("`Spam like`", value)
         self.assertIn("spam or junk mail", value)
 
+    def test_system_prompt_documents_suggested_labels_as_telemetry_only(self):
+        assignments = self.build_prompt_assignments()
+        value = assignments["systemPrompt"]["value"]
+
+        self.assertIn("suggested_labels", value)
+        self.assertIn("telemetry-only", value)
+        self.assertIn("do not create Proton labels", value)
+        self.assertIn("do not put suggested labels in `labels`", value)
+        self.assertIn("strict JSON", value)
+
+    def test_prepare_targets_records_suggested_labels_without_targets(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '3542',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [
+      { label: 'Invoice', confidence: 0.91 }
+    ],
+    suggested_labels: [
+      {
+        label: 'Security alert',
+        reason: 'Account access notifications do not fit the existing labels',
+        criteria: 'Use for MFA, password, sign-in, and account access warnings'
+      },
+      {
+        label: 'Invoice',
+        reason: 'Duplicate of an allowed label',
+        criteria: 'Should be ignored as a suggestion'
+      }
+    ],
+    reason: 'Receipt with a useful missing category suggestion',
+  }),
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertIn("suggested_labels", result)
+        self.assertEqual(
+            result["suggested_labels"],
+            [
+                {
+                    "label": "Security alert",
+                    "reason": "Account access notifications do not fit the existing labels",
+                    "criteria": "Use for MFA, password, sign-in, and account access warnings",
+                },
+            ],
+        )
+        self.assertEqual(result["classification"]["suggested_labels"], result["suggested_labels"])
+        self.assertEqual(result["labels"], [{"label": "Invoice", "confidence": 0.91}])
+        self.assertEqual(result["targetMailboxes"], ["Labels/Invoice", "Labels/Classified"])
+        self.assertNotIn("Labels/Security alert", result["targetMailboxes"])
+
+    def test_prepare_targets_drops_unknown_labels_but_records_them(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '3542',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [
+      { label: 'Security alert', confidence: 0.94 },
+      { label: 'Spam like', confidence: 0.86 }
+    ],
+    suggested_labels: [
+      {
+        label: 'Security alert',
+        reason: 'Security notifications may deserve their own label',
+        criteria: 'Use for account access warnings'
+      }
+    ],
+    reason: 'Spam-like account warning with an unsupported category',
+  }),
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["labels"], [{"label": "Spam like", "confidence": 0.86}])
+        self.assertIn("unknown_labels", result)
+        self.assertEqual(result["unknown_labels"], [{"label": "Security alert", "confidence": 0.94}])
+        self.assertEqual(result["targetMailboxes"], ["Labels/Spam like", "Labels/Classified"])
+        self.assertNotIn("Labels/Security alert", result["targetMailboxes"])
+
+    def test_prepare_targets_caps_and_dedupes_unknown_labels(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '3542',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [
+      { label: 'Security alert', confidence: 0.94 },
+      { label: 'security alert', confidence: 0.93 },
+      { label: 'Subscription', confidence: 0.92 },
+      { label: 'Newsletter', confidence: 0.91 },
+      { label: 'Delivery', confidence: 0.90 },
+      { label: 'Warranty', confidence: 0.89 },
+      { label: 'Account', confidence: 0.88 }
+    ],
+    suggested_labels: [],
+    reason: 'Unsupported category overflow',
+  }),
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(
+            result["unknown_labels"],
+            [
+                {"label": "Security alert", "confidence": 0.94},
+                {"label": "Subscription", "confidence": 0.92},
+                {"label": "Newsletter", "confidence": 0.91},
+                {"label": "Delivery", "confidence": 0.9},
+                {"label": "Warranty", "confidence": 0.89},
+            ],
+        )
+        self.assertEqual(result["targetMailboxes"], ["Labels/Classified"])
+
+    def test_telemetry_classification_attempt_keeps_suggested_labels_in_parsed_json(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Telemetry build classification attempt').parameters.jsCode;
+const source = {
+  uid: '3542',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  systemPrompt: 'system prompt',
+  userPrompt: 'user prompt',
+  telemetry: { run_id: '3276939b-659e-494e-8a8d-0af412ff6106' },
+  email_item_id: '11111111-1111-4111-8111-111111111111',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [{ label: 'uncertain', confidence: 0.4 }],
+    suggested_labels: [
+      {
+        label: 'Security alert',
+        reason: 'Security notification category is missing',
+        criteria: 'Use for MFA and login warnings'
+      }
+    ],
+    reason: 'Ambiguous account notification',
+  }),
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  const params = result[0].json.classification_attempt_params;
+  console.log(JSON.stringify({
+    parsed_json: JSON.parse(params[5]),
+    labels_json: JSON.parse(params[6]),
+    status: params[9],
+  }));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+
+        self.assertEqual(
+            result["parsed_json"]["suggested_labels"],
+            [
+                {
+                    "label": "Security alert",
+                    "reason": "Security notification category is missing",
+                    "criteria": "Use for MFA and login warnings",
+                },
+            ],
+        )
+        self.assertEqual(result["labels_json"], [{"label": "uncertain", "confidence": 0.4}])
+        self.assertEqual(result["status"], "uncertain")
+
     def test_prepare_targets_accepts_schedule_and_spam_like_labels(self):
         script = r"""
 const fs = require('fs');
