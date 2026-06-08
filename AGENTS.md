@@ -76,6 +76,10 @@ Do not silently overwrite live n8n with the smaller local main export if the sta
 
 - n8n public URL: `https://n8n.home.ericbrearley.com`
 - n8n Coolify service URL: `https://coolify.home.ericbrearley.com/project/tk7pb9r1a5cqvhth6kiot9e4/environment/auw9n2ov1ix59da3h3dcbvgt/service/ew4sow0ws8kggowogk4owk4c`
+- Coolify context: `home`
+- Coolify project UUID: `tk7pb9r1a5cqvhth6kiot9e4`
+- Coolify environment UUID: `auw9n2ov1ix59da3h3dcbvgt`
+- n8n Coolify service UUID: `ew4sow0ws8kggowogk4owk4c`
 - Coolify host: `ubuntu@192.168.3.200`
 - n8n container: `n8n-ew4sow0ws8kggowogk4owk4c`
 - n8n Postgres container: `postgresql-ew4sow0ws8kggowogk4owk4c`
@@ -83,6 +87,13 @@ Do not silently overwrite live n8n with the smaller local main export if the sta
 - Workflow ID: `fm6pLPnZWsGfK1oH`
 - Workflow name: `Email Organiser`
 - Project ID for import: `VYxWLhVfItgsWnnA`
+
+Expected DNS/network behavior:
+
+- `n8n.home.ericbrearley.com` should resolve to `192.168.3.200`.
+- The local resolver may be Tailscale-managed (`100.100.100.100`). In Codex's default sandbox, DNS/network calls may fail with `curl: (6) Could not resolve host: n8n.home.ericbrearley.com` even when the service is healthy.
+- Treat a single DNS miss from inside the sandbox as retryable or sandbox-related. Re-run important n8n/Coolify/MCP network checks outside the sandbox before diagnosing n8n, MCP auth, or Coolify availability.
+- If repeated DNS lookups outside the sandbox fail, investigate Tailscale/MagicDNS or local resolver state; do not assume the n8n service moved.
 
 Live credential references that may need to be injected into workflow JSON before import:
 
@@ -114,6 +125,195 @@ bearer_token_env_var = "N8N_MCP_ACCESS_TOKEN"
 ```
 
 The intended MCP configuration has no `enabled_tools` allow-list. An empty or absent allow-list is intended to expose all tools advertised by the n8n MCP server. The token must be available in Codex's process environment, not merely in an interactive shell after Codex has already started.
+
+Check the local Codex MCP registration:
+
+```bash
+codex mcp list
+codex mcp get n8n-mcp
+```
+
+Expected registration:
+
+```text
+Name: n8n-mcp
+URL: https://n8n.home.ericbrearley.com/mcp-server/http
+Bearer token env var: N8N_MCP_ACCESS_TOKEN
+Status: enabled
+Auth: Bearer token
+```
+
+Verify the token is available without printing it:
+
+```bash
+if [ -n "$N8N_MCP_ACCESS_TOKEN" ]; then printf 'N8N_MCP_ACCESS_TOKEN is set\n'; else printf 'N8N_MCP_ACCESS_TOKEN is not set\n'; fi
+```
+
+In the 2026-06-08 session, the n8n MCP server was configured and reachable, but its tools were not injected into Codex as a first-class `mcp__...__n8n` tool namespace. Direct MCP JSON-RPC over HTTP still worked from the shell. Use the bearer token from the environment and do not print the token.
+
+Minimal MCP initialize probe:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $N8N_MCP_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"codex-check","version":"0.0.0"}}}' \
+  https://n8n.home.ericbrearley.com/mcp-server/http
+```
+
+List advertised MCP tools:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $N8N_MCP_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  https://n8n.home.ericbrearley.com/mcp-server/http
+```
+
+Call an MCP tool directly:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $N8N_MCP_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_workflows","arguments":{"query":"Email Organiser","limit":10}}}' \
+  https://n8n.home.ericbrearley.com/mcp-server/http
+```
+
+Current MCP server instructions say to follow this order when building workflows through MCP:
+
+1. Call `get_sdk_reference` before writing workflow SDK code.
+2. Call `get_suggested_nodes` with relevant workflow categories.
+3. Call `search_nodes` for needed service, trigger, and utility nodes.
+4. Call `get_node_types` for every node ID/discriminator you plan to use.
+5. Write workflow SDK code using the reference and exact node parameter types.
+6. Call `validate_workflow` and iterate until valid.
+7. Call `create_workflow_from_code` for new workflows.
+8. Call `update_workflow` for existing workflows.
+9. Call `archive_workflow` only when intentionally archiving a workflow.
+
+Advertised MCP tools observed on 2026-06-08:
+
+- `search_workflows`
+- `execute_workflow`
+- `get_execution`
+- `search_executions`
+- `get_workflow_details`
+- `publish_workflow`
+- `unpublish_workflow`
+- `prepare_test_pin_data`
+- `test_workflow`
+- `list_credentials`
+- `search_data_tables`
+- `create_data_table`
+- `rename_data_table`
+- `add_data_table_column`
+- `delete_data_table_column`
+- `rename_data_table_column`
+- `add_data_table_rows`
+- `search_nodes`
+- `get_node_types`
+- `get_suggested_nodes`
+- `validate_workflow`
+- `create_workflow_from_code`
+- `search_projects`
+- `search_folders`
+- `archive_workflow`
+- `update_workflow`
+- `get_sdk_reference`
+
+Write-capable or execution-capable tools include `execute_workflow`, `test_workflow`, `publish_workflow`, `unpublish_workflow`, `create_data_table`, `rename_data_table`, `add_data_table_column`, `delete_data_table_column`, `rename_data_table_column`, `add_data_table_rows`, `create_workflow_from_code`, `archive_workflow`, and `update_workflow`.
+
+`update_workflow` supports these atomic operations:
+
+- `updateNodeParameters`
+- `setNodeParameter`
+- `addNode`
+- `removeNode`
+- `renameNode`
+- `addConnection`
+- `removeConnection`
+- `setNodeCredential`
+- `setNodePosition`
+- `setNodeDisabled`
+- `setWorkflowMetadata`
+
+### MCP Update Caveats
+
+MCP `update_workflow` operates on the live n8n draft workflow, not on the local `email-classifer/workflow.json` checked out in this repo. This matters because live n8n may contain the 103-node step-telemetry workflow while local `main` may contain the smaller non-telemetry export. Always call `get_workflow_details` first and confirm `nodeCount`, `active`, and the target node names/positions before applying an update.
+
+Observed live read on 2026-06-08:
+
+- workflow `Email Organiser` was inactive;
+- live draft had 103 nodes;
+- `Manual Trigger` still existed;
+- `Manual Trigger` position was `[-760, 80]`;
+- `activeVersionId` was `null`.
+
+A previous agent reported that `update_workflow` returned HTTP 500 for a no-op position update. A later verification repeated this operation:
+
+```json
+{
+  "type": "setNodePosition",
+  "nodeName": "Manual Trigger",
+  "position": [-760, 80]
+}
+```
+
+That later verification returned HTTP 200 with `appliedOperations: 1`; it did not reproduce the HTTP 500. However, even though the position was unchanged, n8n still created a new draft `versionId`. Treat no-op `update_workflow` calls as write operations, not harmless probes.
+
+After the no-op update, a final `get_workflow_details` read confirmed:
+
+- workflow stayed inactive;
+- live draft still had 103 nodes;
+- `Manual Trigger` stayed at `[-760, 80]`;
+- no active version was published.
+
+The earlier HTTP 500 for the same no-op `update_workflow` request was later traced to malformed direct JSON-RPC from curl: the request body had one extra closing brace, and the n8n container logged `ResponseError: Failed to parse request body`. Validate hand-written JSON before blaming MCP permissions or workflow update semantics.
+
+If `update_workflow` returns HTTP 500 or a tool-level error, do not assume the workflow changed or failed to change. Immediately re-read the workflow with `get_workflow_details` and compare the small state summary: `active`, `nodeCount`, `versionId`, `activeVersionId`, and the specific node/connection you attempted to change. If using direct curl, capture the response body separately and inspect both the HTTP status and the JSON-RPC/tool result payload.
+
+The validation warning returned by `update_workflow`:
+
+```text
+Node 'Email Trigger (IMAP)' is not connected to any input. It will not receive data.
+```
+
+is expected for an n8n trigger node. Trigger nodes do not receive input from upstream nodes. Do not treat this warning as evidence that the IMAP trigger is broken.
+
+`Email Organiser` MCP visibility verified on 2026-06-08:
+
+- workflow ID: `fm6pLPnZWsGfK1oH`
+- name: `Email Organiser`
+- `availableInMCP`: `true`
+- `canExecute`: `true`
+- active state at verification time: `false`
+- trigger count at verification time: `2`
+
+Scopes reported by `search_workflows` for `Email Organiser`:
+
+- `execution:reveal`
+- `workflow:create`
+- `workflow:delete`
+- `workflow:disableRedaction`
+- `workflow:enableRedaction`
+- `workflow:execute`
+- `workflow:execute-chat`
+- `workflow:export`
+- `workflow:list`
+- `workflow:move`
+- `workflow:publish`
+- `workflow:read`
+- `workflow:share`
+- `workflow:unpublish`
+- `workflow:unshare`
+- `workflow:update`
+
+`list_credentials` returns credential metadata only and must not return secret values.
 
 ## Email Organiser Goals
 
@@ -323,6 +523,7 @@ Related repo:
 - local: `/home/eric/source/n8n-workflow-status`
 - GitHub: `https://github.com/ebrearley/n8n-workflow-status`
 - app URL: `https://n8n-workflow-status.home.brearley.net`
+- Coolify app URL: `https://coolify.home.ericbrearley.com/project/tk7pb9r1a5cqvhth6kiot9e4/environment/auw9n2ov1ix59da3h3dcbvgt/application/hpuhcco92fb6xgqjnwd8mcvt`
 - Coolify app UUID: `hpuhcco92fb6xgqjnwd8mcvt`
 - latest deployed commit observed: `74a92738993c95fd55871faf2b8c715d51d5a80f`
 
