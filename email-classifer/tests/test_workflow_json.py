@@ -308,10 +308,10 @@ const json = {
         self.assertIn("uidNext", code)
         self.assertIn("searchUidRange", code)
         self.assertIn("uidSearchWindow", code)
-        self.assertIn("searchMessageId(stateMailbox", code)
+        self.assertIn("fetchMessageIds(stateMailbox", code)
+        self.assertIn("classifiedMessageIds.has(messageId)", code)
         self.assertIn("fetchHeadersForUids", code)
         self.assertNotIn("searchAll(sourceMailbox", code)
-        self.assertNotIn("fetchMessageIds(stateMailbox", code)
 
     def test_fetch_supports_optional_batch_limit_without_capping_manual_backfill(self):
         assignments = self.configure_assignments()
@@ -978,6 +978,14 @@ const json = {
         self.assertIn("telemetry: defaults.telemetry", code)
         self.assertIn("imapPairsJson: inputConfig.imapPairsJson", code)
         self.assertIn("fetchWatchdogMs: defaults.fetchWatchdogMs", code)
+
+    def test_fetch_preloads_classified_message_ids_instead_of_per_candidate_search(self):
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        self.assertIn("classifiedMessageIds = await client.fetchMessageIds(stateMailbox)", code)
+        self.assertIn("classified_message_ids_loaded", code)
+        self.assertIn("classifiedMessageIds.has(messageId)", code)
+        self.assertNotIn("client.searchMessageId(stateMailbox, messageId)", code)
 
     def test_telemetry_email_builder_preserves_multiple_expanded_items(self):
         script = r"""

@@ -745,6 +745,15 @@ for (const pair of credentialPairs) {
       warnings.push(`State mailbox not found during dry-run for credential pair ${pair.id}: ${stateMailbox}`);
     }
 
+    let classifiedMessageIds = new Set();
+    if (stateMailboxExists) {
+      markProgress('load_classified_message_ids');
+      classifiedMessageIds = await client.fetchMessageIds(stateMailbox);
+      markProgress('classified_message_ids_loaded', {
+        classifiedUidCount: classifiedMessageIds.size,
+      });
+    }
+
     for (const sourceMailbox of pair.sourceMailboxes) {
       if (emails.length >= defaults.batchLimit) break;
 
@@ -802,9 +811,8 @@ for (const pair of credentialPairs) {
             const rawHeaders = headersByUid.get(String(uid)) || await client.fetchHeaders(uid, sourceMailbox);
             const headers = parseHeaders(rawHeaders);
             const messageId = headers['message-id'] || '';
-            if (stateMailboxExists && messageId) {
-              const matches = await client.searchMessageId(stateMailbox, messageId);
-              if (matches.length > 0) continue;
+            if (stateMailboxExists && messageId && classifiedMessageIds.has(messageId)) {
+              continue;
             }
 
             markProgress('fetch_candidate_body', {
