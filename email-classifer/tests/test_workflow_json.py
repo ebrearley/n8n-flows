@@ -421,6 +421,37 @@ const json = {
         self.assertNotIn("email_subject", result[0]["json"])
         self.assertNotIn("email_body", result[0]["json"])
 
+    def test_loop_over_emails_resets_only_for_fresh_fetch_batches(self):
+        nodes = self.nodes_by_name()
+        workflow = self.load_workflow()
+
+        loop = nodes["Loop Over Emails"]
+        self.assertEqual(loop["parameters"]["options"]["reset"], "={{ $json.resetLoop === true }}")
+
+        expand_code = nodes["Expand fetched emails"]["parameters"]["jsCode"]
+        self.assertIn("resetLoop: true", expand_code)
+        self.assertEqual(
+            workflow["connections"]["Telemetry restore email item payload"]["main"][0][0]["node"],
+            "Loop Over Emails",
+        )
+
+        apply_code = nodes["Apply Proton labels"]["parameters"]["jsCode"]
+        self.assertIn("resetLoop: false", apply_code)
+        result = self.run_workflow_code_node(
+            "Apply Proton labels",
+            [
+                {
+                    "json": {
+                        "dryRun": True,
+                        "resetLoop": True,
+                        "targetMailboxes": ["Labels/Classified"],
+                        "credentialPair": {"id": "imap-1"},
+                    },
+                },
+            ],
+        )
+        self.assertEqual(result[0]["json"]["resetLoop"], False)
+
     def test_tls_servername_is_not_set_for_ip_hosts(self):
         nodes = self.nodes_by_name()
 

@@ -242,6 +242,14 @@ function normalizeCredentialPair(item) {
   };
 }
 
+function loopbackPayload(item, fields) {
+  return {
+    ...item,
+    ...fields,
+    resetLoop: false,
+  };
+}
+
 const item = $input.first()?.json ?? {};
 const pair = normalizeCredentialPair(item);
 const targetMailboxes = Array.isArray(item.targetMailboxes)
@@ -256,11 +264,10 @@ const dryRun = boolValue(item.dryRun, false);
 
 if (dryRun) {
   return [{
-    json: {
-      ...item,
+    json: loopbackPayload(item, {
       destination_actions: Object.fromEntries(uniqueTargets.map((target) => [target, 'would_apply_label'])),
       source_action: 'would_keep_in_source',
-    },
+    }),
   }];
 }
 
@@ -295,15 +302,14 @@ try {
 
   if (missingMailboxes.length > 0) {
     return [{
-      json: {
-        ...item,
+      json: loopbackPayload(item, {
         label_application_skipped: true,
         missingMailboxes,
         destination_actions: Object.fromEntries(
           uniqueTargets.map((target) => [target, 'skipped_missing_mailbox']),
         ),
         source_action: 'kept_in_source',
-      },
+      }),
     }];
   }
 
@@ -326,9 +332,8 @@ try {
 }
 
 return [{
-  json: {
-    ...item,
+  json: loopbackPayload(item, {
     destination_actions: destinationActions,
     source_action: 'kept_in_source',
-  },
+  }),
 }];
