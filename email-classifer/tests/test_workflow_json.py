@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import subprocess
 import unittest
 from pathlib import Path
@@ -61,6 +62,62 @@ const $input = {{
             text=True,
         )
         return json.loads(completed.stdout)
+
+    def run_workflow_code_node(self, node_name, input_items, lookups=None):
+        script = """
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const inputJson = JSON.parse(fs.readFileSync(0, 'utf8'));
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === inputJson.node_name).parameters.jsCode;
+const inputItems = inputJson.input_items;
+const lookups = inputJson.lookups || {};
+const $input = {
+  all: () => inputItems,
+  first: () => inputItems[0],
+};
+const $ = (name) => {
+  const items = lookups[name] || [];
+  return {
+    all: () => items,
+    item: { json: items[0]?.json || {} },
+  };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$input', '$json', '$', code)(
+    $input,
+    inputItems[0]?.json ?? {},
+    $,
+  );
+  console.log(JSON.stringify(result));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            input=json.dumps(
+                {
+                    "node_name": node_name,
+                    "input_items": input_items,
+                    "lookups": lookups or {},
+                },
+            ),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
+    def load_step_telemetry_generator(self):
+        path = ROOT / "tools" / "add_step_telemetry.py"
+        spec = importlib.util.spec_from_file_location("add_step_telemetry", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def test_imap_action_nodes_are_javascript_code_nodes(self):
         nodes = self.nodes_by_name()
@@ -626,6 +683,77 @@ const json = {
             workflow["connections"]["Telemetry restore step finish: Apply Proton labels (trigger)"]["main"][0][0]["node"],
             "Telemetry build label actions (trigger)",
         )
+
+    def test_generated_step_start_overrides_previous_stage_metadata(self):
+        result = self.run_workflow_code_node(
+            "Telemetry start step: Build classification prompt",
+            [
+                {
+                    "json": {
+                        "telemetry": {"run_id": "11111111-1111-1111-1111-111111111111"},
+                        "telemetry_step_name": "Fetch next unclassified emails",
+                        "telemetry_step_type": "previous-stage",
+                        "telemetry_step_sort_order": 30,
+                        "uid": "42",
+                    },
+                },
+            ],
+        )
+        output = result[0]["json"]
+
+        self.assertEqual(output["telemetry_step_name"], "Build classification prompt")
+        self.assertEqual(output["telemetry_step_type"], "n8n-stage")
+        self.assertEqual(output["telemetry_step_sort_order"], 50)
+        self.assertEqual(output["telemetry_step_params"][1], "Build classification prompt")
+        self.assertEqual(output["telemetry_step_params"][2], "n8n-stage")
+        self.assertEqual(output["telemetry_step_params"][3], 50)
+
+    def test_generated_finish_step_recovers_step_id_for_replaced_and_fanned_out_items(self):
+        step_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        result = self.run_workflow_code_node(
+            "Telemetry finish step: Expand fetched emails",
+            [
+                {"json": {"uid": "1"}, "pairedItem": {"item": 0}},
+                {"json": {"uid": "2"}, "pairedItem": {"item": 0}},
+            ],
+            lookups={
+                "Telemetry restore step start: Expand fetched emails": [
+                    {
+                        "json": {
+                            "telemetry_step_id": step_id,
+                            "telemetry_step_source_index": 0,
+                        },
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(result[0]["json"]["telemetry_step_id"], step_id)
+        self.assertEqual(result[1]["json"]["telemetry_step_id"], step_id)
+        self.assertEqual(result[0]["json"]["telemetry_step_finish_params"][0], step_id)
+        self.assertEqual(result[1]["json"]["telemetry_step_finish_params"][0], step_id)
+        self.assertEqual(result[0]["json"]["telemetry_step_finish_params"][-1], 0)
+        self.assertEqual(result[1]["json"]["telemetry_step_finish_params"][-1], 1)
+
+    def test_step_telemetry_generator_rejects_multi_output_stage_targets(self):
+        generator = self.load_step_telemetry_generator()
+        workflow = {
+            "nodes": [{"name": "Multi output target", "position": [0, 0]}],
+            "connections": {
+                "Multi output target": {
+                    "main": [
+                        [{"node": "First output", "type": "main", "index": 0}],
+                        [{"node": "Second output", "type": "main", "index": 0}],
+                    ],
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "non-empty non-zero main output"):
+            generator.validate_stage_target_outputs(
+                workflow,
+                {"stage": "Unsupported", "node": "Multi output target"},
+            )
 
     def test_telemetry_postgres_nodes_stop_on_error_during_setup(self):
         for node in self.load_workflow()["nodes"]:

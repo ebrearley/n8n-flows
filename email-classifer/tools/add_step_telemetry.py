@@ -161,20 +161,69 @@ const TELEMETRY_STEP_SORT_ORDER = {sort_order};
     : rawSourceItem;
   const item = {
     ...sourceItem,
-    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,
-    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,
-    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,
+    telemetry_step_name: TELEMETRY_STEP_NAME,
+    telemetry_step_type: TELEMETRY_STEP_TYPE,
+    telemetry_step_sort_order: TELEMETRY_STEP_SORT_ORDER,
   };"""
     else:
         replacement = """  const sourceItem = inputItem.json ?? {};
   const item = {
     ...sourceItem,
-    telemetry_step_name: sourceItem.telemetry_step_name || TELEMETRY_STEP_NAME,
-    telemetry_step_type: sourceItem.telemetry_step_type || TELEMETRY_STEP_TYPE,
-    telemetry_step_sort_order: sourceItem.telemetry_step_sort_order ?? TELEMETRY_STEP_SORT_ORDER,
+    telemetry_step_name: TELEMETRY_STEP_NAME,
+    telemetry_step_type: TELEMETRY_STEP_TYPE,
+    telemetry_step_sort_order: TELEMETRY_STEP_SORT_ORDER,
   };"""
     if source_line not in base_code:
         raise ValueError("telemetry_start_step.js shape changed; cannot inject stage defaults")
+    return defaults + base_code.replace(source_line, replacement)
+
+
+def finish_step_code(stage: str, base_code: str) -> str:
+    restore_start_name = f"Telemetry restore step start: {stage}"
+    defaults = f"""const TELEMETRY_RESTORE_STEP_START_NODE = {json.dumps(restore_start_name)};
+
+function stepSourceIndex(value, fallback = 0) {{
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}}
+
+function pairedSourceIndex(inputItem, fallbackIndex) {{
+  const paired = inputItem?.pairedItem;
+  if (Array.isArray(paired)) {{
+    for (const entry of paired) {{
+      const parsed = pairedSourceIndex({{ pairedItem: entry }}, fallbackIndex);
+      if (Number.isFinite(parsed)) return parsed;
+    }}
+  }}
+  if (typeof paired === 'number') return stepSourceIndex(paired, fallbackIndex);
+  if (paired && typeof paired === 'object') {{
+    return stepSourceIndex(paired.item ?? paired.itemIndex ?? paired.sourceIndex, fallbackIndex);
+  }}
+
+  const json = inputItem?.json ?? {{}};
+  return stepSourceIndex(
+    json.telemetry_step_source_index ?? json.source_index ?? json.sourceIndex,
+    fallbackIndex,
+  );
+}}
+
+function currentStepId(inputItem, fallbackIndex) {{
+  const sourceItems = $(TELEMETRY_RESTORE_STEP_START_NODE).all();
+  const index = pairedSourceIndex(inputItem, fallbackIndex);
+  const source = sourceItems[index]?.json ?? sourceItems[0]?.json ?? {{}};
+  const json = inputItem?.json ?? {{}};
+  return source.telemetry_step_id || source.step_id || json.telemetry_step_id || json.step_id || '';
+}}
+
+"""
+    source_line = "  const item = inputItem.json ?? {};"
+    replacement = """  const sourceItem = inputItem.json ?? {};
+  const item = {
+    ...sourceItem,
+    telemetry_step_id: currentStepId(inputItem, index) || sourceItem.telemetry_step_id || sourceItem.step_id || '',
+  };"""
+    if source_line not in base_code:
+        raise ValueError("telemetry_finish_step.js shape changed; cannot inject step id recovery")
     return defaults + base_code.replace(source_line, replacement)
 
 
@@ -312,6 +361,25 @@ def unwrap_stage_connections(workflow: dict) -> None:
     remove_generated_connections(workflow)
 
 
+def validate_stage_target_outputs(workflow: dict, stage_config: dict) -> None:
+    target_name = stage_config["node"]
+    target_connection = workflow.get("connections", {}).get(target_name, {})
+    main_outputs = target_connection.get("main", [])
+
+    if not isinstance(main_outputs, list):
+        raise ValueError(
+            f"Stage {stage_config['stage']} target {target_name} has unsupported main output shape",
+        )
+    if len(main_outputs) > 1:
+        if any(output for output in main_outputs[1:]):
+            raise ValueError(
+                f"Stage {stage_config['stage']} target {target_name} has a non-empty non-zero main output",
+            )
+        raise ValueError(
+            f"Stage {stage_config['stage']} target {target_name} has multiple main outputs",
+        )
+
+
 def normalize_bulk_run_start(connections: dict) -> None:
     set_main_connection(connections, "Manual Trigger", "Telemetry start run")
     set_main_connection(connections, "Backfill Form Trigger", "Telemetry start run")
@@ -372,7 +440,11 @@ def append_stage_nodes(workflow: dict) -> None:
                     positions["restore_start"],
                     restore_start_code(stage),
                 ),
-                code_node(names["finish"], positions["finish"], finish_code),
+                code_node(
+                    names["finish"],
+                    positions["finish"],
+                    finish_step_code(stage, finish_code),
+                ),
                 postgres_node(
                     names["update"],
                     positions["update"],
@@ -401,6 +473,7 @@ def instrument_stage_connections(workflow: dict) -> None:
         target_name = stage_config["node"]
         names = stage_node_names(stage)
         target_connection = connections.setdefault(target_name, {})
+        validate_stage_target_outputs(workflow, stage_config)
         original_target_main = deepcopy(target_connection.get("main", []))
 
         redirect_main_destination(connections, target_name, names["start"])
