@@ -235,6 +235,57 @@ const dollar = (name) => {
         self.assertEqual(assignments["actionSpamMailbox"]["value"], "Spam")
         self.assertEqual(assignments["actionTrashMailbox"]["value"], "Trash")
 
+    def test_execute_email_action_uses_uid_move_without_expunge_or_delete_fallback(self):
+        nodes = self.nodes_by_name()
+
+        for name in ("Execute email action", "Execute email action (trigger)"):
+            code = nodes[name]["parameters"]["jsCode"]
+            self.assertIn("moveUid", code)
+            self.assertIn("UID MOVE", code)
+            self.assertIn("mailboxExists", code)
+            self.assertIn("searchMessageId", code)
+            self.assertNotIn("EXPUNGE", code)
+            self.assertNotIn("STORE +FLAGS", code)
+            self.assertNotIn("CREATE", code)
+
+    def test_execute_email_action_dry_run_reports_would_move(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Execute email action').parameters.jsCode;
+const item = {
+  emailActionsMode: 'dry_run',
+  emailAction: {
+    action: 'archive',
+    destinationMailbox: 'Archive',
+    reason: 'past_event',
+    approved: true,
+    mode: 'dry_run'
+  }
+};
+const input = { first: () => ({ json: item }) };
+
+(async () => {
+  const result = await new AsyncFunction('$input', code)(input);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["email_action_status"], "would_move")
+        self.assertEqual(result["email_action_destination"], "Archive")
+
     def test_plan_email_actions_moves_spam_like_to_spam(self):
         result = self.run_plan_email_actions({
             "emailActionsMode": "live",
