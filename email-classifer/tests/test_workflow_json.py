@@ -72,6 +72,50 @@ class WorkflowJsonTests(unittest.TestCase):
             self.assertEqual(nodes[name]["type"], "n8n-nodes-base.code")
             self.assertEqual(nodes[name]["parameters"]["language"], "javaScript")
 
+    def test_email_action_nodes_are_javascript_code_nodes(self):
+        nodes = self.nodes_by_name()
+
+        for name in (
+            "Plan email actions",
+            "Execute email action",
+            "Execute email action (trigger)",
+        ):
+            self.assertEqual(nodes[name]["type"], "n8n-nodes-base.code")
+            self.assertEqual(nodes[name]["parameters"]["language"], "javaScript")
+
+    def test_email_action_nodes_are_wired_after_label_target_preparation(self):
+        workflow = self.load_workflow()
+
+        self.assertEqual(
+            workflow["connections"]["Prepare Proton label targets"]["main"][0][0]["node"],
+            "Plan email actions",
+        )
+        self.assertEqual(
+            workflow["connections"]["Plan email actions"]["main"][0][0]["node"],
+            "Inspect Proton label targets",
+        )
+        self.assertEqual(
+            workflow["connections"]["Apply Proton labels"]["main"][0][0]["node"],
+            "Execute email action",
+        )
+        self.assertEqual(
+            workflow["connections"]["Execute email action"]["main"][0][0]["node"],
+            "Loop Over Emails",
+        )
+        self.assertEqual(
+            workflow["connections"]["Apply Proton labels (trigger)"]["main"][0][0]["node"],
+            "Execute email action (trigger)",
+        )
+        self.assertNotIn("Execute email action (trigger)", workflow["connections"])
+
+    def test_configure_node_sets_live_email_action_defaults(self):
+        assignments = self.configure_assignments()
+
+        self.assertEqual(assignments["emailActionsMode"]["value"], "live")
+        self.assertEqual(assignments["actionArchiveMailbox"]["value"], "Archive")
+        self.assertEqual(assignments["actionSpamMailbox"]["value"], "Spam")
+        self.assertEqual(assignments["actionTrashMailbox"]["value"], "Trash")
+
     def test_workflow_does_not_use_execute_command_nodes(self):
         workflow = self.load_workflow()
         execute_nodes = [

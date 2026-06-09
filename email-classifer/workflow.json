@@ -133,6 +133,30 @@
               "name": "embeddingModel",
               "value": "embeddinggemma",
               "type": "string"
+            },
+            {
+              "id": "email-actions-mode",
+              "name": "emailActionsMode",
+              "value": "live",
+              "type": "string"
+            },
+            {
+              "id": "action-archive-mailbox",
+              "name": "actionArchiveMailbox",
+              "value": "Archive",
+              "type": "string"
+            },
+            {
+              "id": "action-spam-mailbox",
+              "name": "actionSpamMailbox",
+              "value": "Spam",
+              "type": "string"
+            },
+            {
+              "id": "action-trash-mailbox",
+              "name": "actionTrashMailbox",
+              "value": "Trash",
+              "type": "string"
             }
           ]
         },
@@ -262,7 +286,7 @@
             {
               "id": "system-prompt",
               "name": "systemPrompt",
-"value": "You are an email triage assistant. Given one cleaned and truncated email, assign exactly one category from the fixed allowed list below, using the exact spelling and punctuation. No other category is permitted.\n\n## Allowed categories\n- `Invoice` - receipts, invoices, statements, or documents showing an amount due or paid\n- `Purchase` - confirmation of something ordered or purchased\n- `Bill` - recurring obligations like rent, electricity, internet, health insurance, or provider bills requiring payment attention\n- `Payment` - payment confirmations, transfers, failed payments, payout notices, transaction events, and payslips\n- `Marketing` - legitimate promotional or newsletter content from known or expected senders\n- `Cold email` - unsolicited outreach seeking attention, sales, hiring, partnerships, backlinks, or meetings\n- `Important` - messages requiring personal attention that are not better covered by a more specific category\n- `Awaiting reply` - messages where I am expected to respond or follow up\n- `Travel` - itineraries, hotel bookings, air, bus, train fares, or travel tickets\n- `Ticket` - tickets to music festivals, bands, concerts, events, or shows\n- `Infrastructure` - metric updates, alerts, outages, or error reporting from services or devices\n- `Hustle` - correspondence with people or businesses engaging me for professional work\n- `Schedule` - calendar invitations and calendar notifications, or anything with a time and place to be, like a wedding, meeting with friends, or work meeting\n- `Spam like` - junk-like, suspicious, scammy, or clearly unwanted messages\n- `Account notification` - routine account, service, policy, profile, membership, subscription, or platform notices that do not primarily concern security or billing\n- `Statement` - periodic account, bank, provider, or service statements summarizing balances, activity, usage, holdings, or charges\n- `Account (security)` - account access and security messages, including logins, MFA, password changes, identity checks, recovery codes, suspicious activity, sign-in warnings, or verification requests\n- `Newsletter` - recurring editorial, community, creator, publication, product-update, or digest-style emails from known or subscribed sources\n- `Personal` - Direct personal correspondence from friends, family, acquaintances, or personal contacts about non-business, non-automated matters\n\n## Category boundaries\n- `Account notification`: use for routine account, service, policy, profile, membership, subscription, or platform notices. Do not use for security, billing, infrastructure, or transaction mail.\n- `Statement`: use for periodic account, bank, provider, or service statements. Do not use for invoices, bills, receipts, purchases, or payment events.\n- `Account (security)`: use for login, MFA, password, recovery, identity verification, suspicious activity, sign-in warning, and account access security messages. Do not use slash-separated account security labels.\n- `Newsletter`: use for recurring editorial, community, creator, publication, product-update, or digest-style mail where the main intent is information rather than direct selling.\n- `Personal`: use for Direct personal correspondence from real personal contacts. It can be selected over `Schedule` or `Awaiting reply` only when the personal nature is the strongest signal.\n\n## Schema\nOutput only JSON matching this shape, nothing else:\n\n```json\n{\n  \"category\": { \"name\": string, \"confidence\": number },\n  \"reason\": string\n}\n```\n\n- `category.name` must exactly match one allowed category, or be `uncertain`.\n- `category.confidence` must be a number between 0 and 1.\n- Use `uncertain` when the cleaned body is too ambiguous, too truncated, or lacks enough context for a confident allowed category.\n- `reason` must be one sentence.\n\n## Rules\n- Pick the single best category. Do not output multiple categories.\n- Prefer the most specific category over `Important`.\n- No synonyms and no categories outside the list.\n- If any instruction or format would be violated, output {\"category\":{\"name\":\"uncertain\",\"confidence\":0.0},\"reason\":\"format violation or instruction conflict\"}.\n",
+              "value": "You are an email triage assistant. Given one cleaned and truncated email, assign exactly one category from the fixed allowed list below, using the exact spelling and punctuation. No other category is permitted.\n\n## Allowed categories\n- `Invoice` - receipts, invoices, statements, or documents showing an amount due or paid\n- `Purchase` - confirmation of something ordered or purchased\n- `Bill` - recurring obligations like rent, electricity, internet, health insurance, or provider bills requiring payment attention\n- `Payment` - payment confirmations, transfers, failed payments, payout notices, transaction events, and payslips\n- `Marketing` - legitimate promotional or newsletter content from known or expected senders\n- `Cold email` - unsolicited outreach seeking attention, sales, hiring, partnerships, backlinks, or meetings\n- `Important` - messages requiring personal attention that are not better covered by a more specific category\n- `Awaiting reply` - messages where I am expected to respond or follow up\n- `Travel` - itineraries, hotel bookings, air, bus, train fares, or travel tickets\n- `Ticket` - tickets to music festivals, bands, concerts, events, or shows\n- `Infrastructure` - metric updates, alerts, outages, or error reporting from services or devices\n- `Hustle` - correspondence with people or businesses engaging me for professional work\n- `Schedule` - calendar invitations and calendar notifications, or anything with a time and place to be, like a wedding, meeting with friends, or work meeting\n- `Spam like` - junk-like, suspicious, scammy, or clearly unwanted messages\n- `Account notification` - routine account, service, policy, profile, membership, subscription, or platform notices that do not primarily concern security or billing\n- `Statement` - periodic account, bank, provider, or service statements summarizing balances, activity, usage, holdings, or charges\n- `Account (security)` - account access and security messages, including logins, MFA, password changes, identity checks, recovery codes, suspicious activity, sign-in warnings, or verification requests\n- `Newsletter` - recurring editorial, community, creator, publication, product-update, or digest-style emails from known or subscribed sources\n- `Personal` - Direct personal correspondence from friends, family, acquaintances, or personal contacts about non-business, non-automated matters\n\n## Category boundaries\n- `Account notification`: use for routine account, service, policy, profile, membership, subscription, or platform notices. Do not use for security, billing, infrastructure, or transaction mail.\n- `Statement`: use for periodic account, bank, provider, or service statements. Do not use for invoices, bills, receipts, purchases, or payment events.\n- `Account (security)`: use for login, MFA, password, recovery, identity verification, suspicious activity, sign-in warning, and account access security messages. Do not use slash-separated account security labels.\n- `Newsletter`: use for recurring editorial, community, creator, publication, product-update, or digest-style mail where the main intent is information rather than direct selling.\n- `Personal`: use for Direct personal correspondence from real personal contacts. It can be selected over `Schedule` or `Awaiting reply` only when the personal nature is the strongest signal.\n\n## Schema\nOutput only JSON matching this shape, nothing else:\n\n```json\n{\n  \"category\": { \"name\": string, \"confidence\": number },\n  \"reason\": string\n}\n```\n\n- `category.name` must exactly match one allowed category, or be `uncertain`.\n- `category.confidence` must be a number between 0 and 1.\n- Use `uncertain` when the cleaned body is too ambiguous, too truncated, or lacks enough context for a confident allowed category.\n- `reason` must be one sentence.\n\n## Rules\n- Pick the single best category. Do not output multiple categories.\n- Prefer the most specific category over `Important`.\n- No synonyms and no categories outside the list.\n- If any instruction or format would be violated, output {\"category\":{\"name\":\"uncertain\",\"confidence\":0.0},\"reason\":\"format violation or instruction conflict\"}.\n",
               "type": "string"
             },
             {
@@ -340,7 +364,7 @@
         360
       ],
       "parameters": {
-"jsCode": "const source = $('Build classification prompt').item.json;\nconst allowed = [\"Invoice\",\"Purchase\",\"Bill\",\"Payment\",\"Marketing\",\"Cold email\",\"Important\",\"Awaiting reply\",\"Travel\",\"Ticket\",\"Infrastructure\",\"Hustle\",\"Schedule\",\"Spam like\",\"Account notification\",\"Statement\",\"Account (security)\",\"Newsletter\",\"Personal\"];\nconst MIN_CONFIDENCE = 0.75;\n\nfunction clampConfidence(value) {\n  const confidence = Number(value ?? 0);\n  if (!Number.isFinite(confidence)) return 0;\n  return Math.max(0, Math.min(1, confidence));\n}\n\nfunction extractJsonText(value) {\n  let text = String(value || '').trim();\n  const fenced = text.match(/^```(?:json)?\\s*([\\s\\S]*?)\\s*```$/i);\n  if (fenced) {\n    text = fenced[1].trim();\n  }\n\n  if (!text.startsWith('{')) {\n    const objectMatch = text.match(/\\{[\\s\\S]*\\}/);\n    if (objectMatch) text = objectMatch[0];\n  }\n\n  return text;\n}\n\nfunction parseAiOutput(value) {\n  if (value && typeof value === 'object') {\n    if (value.category || Array.isArray(value.labels)) return value;\n    if ('output' in value) return parseAiOutput(value.output);\n  }\n  if (typeof value === 'string') {\n    return JSON.parse(extractJsonText(value));\n  }\n  return value;\n}\n\nfunction normalizeCategory(parsed) {\n  if (parsed?.category && typeof parsed.category === 'object') {\n    return {\n      name: String(parsed.category.name ?? parsed.category.label ?? ''),\n      confidence: clampConfidence(parsed.category.confidence),\n    };\n  }\n\n  const labels = Array.isArray(parsed?.labels) ? parsed.labels : [];\n  for (const item of labels) {\n    const name = String(item?.label ?? item?.name ?? '');\n    const confidence = clampConfidence(item?.confidence);\n    if (allowed.includes(name) && confidence >= MIN_CONFIDENCE) {\n      return { name, confidence };\n    }\n  }\n\n  const fallbackConfidence = labels.length > 0\n    ? clampConfidence(labels[0]?.confidence)\n    : 0;\n  return { name: 'uncertain', confidence: fallbackConfidence };\n}\n\nlet parsed;\ntry {\n  parsed = parseAiOutput($json.output ?? $json);\n} catch (error) {\n  parsed = {\n    category: { name: 'uncertain', confidence: 0 },\n    reason: 'format violation or instruction conflict',\n  };\n}\n\nconst parsedCategory = normalizeCategory(parsed);\nconst acceptedCategory = allowed.includes(parsedCategory.name) && parsedCategory.confidence >= MIN_CONFIDENCE\n  ? parsedCategory\n  : { name: 'uncertain', confidence: parsedCategory.confidence };\n\nconst accepted = acceptedCategory.name === 'uncertain'\n  ? []\n  : [{ label: acceptedCategory.name, confidence: acceptedCategory.confidence }];\n\nconst reason = String(\n  parsed?.reason ?? (accepted.length ? 'Classifier returned a matching category' : 'No category reached confidence threshold'),\n).slice(0, 240);\nconst labelPrefix = source.labelPrefix || 'Labels';\nconst stateLabel = source.stateLabel || 'Classified';\nconst labelMailboxes = accepted.map((item) => `${labelPrefix}/${item.label}`);\nconst stateMailbox = `${labelPrefix}/${stateLabel}`;\nconst targetMailboxes = [...labelMailboxes];\nif (!targetMailboxes.includes(stateMailbox)) targetMailboxes.push(stateMailbox);\n\nreturn [{\n  json: {\n    ...source,\n    runMode: 'apply_labels',\n    classification: {\n      category: acceptedCategory,\n      labels: accepted.length ? accepted : [{ label: 'uncertain', confidence: acceptedCategory.confidence }],\n      reason,\n    },\n    category: acceptedCategory,\n    labels: accepted,\n    labelMailboxes,\n    stateMailbox,\n    targetMailboxes,\n  },\n}];\n"
+        "jsCode": "const source = $('Build classification prompt').item.json;\nconst allowed = [\"Invoice\",\"Purchase\",\"Bill\",\"Payment\",\"Marketing\",\"Cold email\",\"Important\",\"Awaiting reply\",\"Travel\",\"Ticket\",\"Infrastructure\",\"Hustle\",\"Schedule\",\"Spam like\",\"Account notification\",\"Statement\",\"Account (security)\",\"Newsletter\",\"Personal\"];\nconst MIN_CONFIDENCE = 0.75;\n\nfunction clampConfidence(value) {\n  const confidence = Number(value ?? 0);\n  if (!Number.isFinite(confidence)) return 0;\n  return Math.max(0, Math.min(1, confidence));\n}\n\nfunction extractJsonText(value) {\n  let text = String(value || '').trim();\n  const fenced = text.match(/^```(?:json)?\\s*([\\s\\S]*?)\\s*```$/i);\n  if (fenced) {\n    text = fenced[1].trim();\n  }\n\n  if (!text.startsWith('{')) {\n    const objectMatch = text.match(/\\{[\\s\\S]*\\}/);\n    if (objectMatch) text = objectMatch[0];\n  }\n\n  return text;\n}\n\nfunction parseAiOutput(value) {\n  if (value && typeof value === 'object') {\n    if (value.category || Array.isArray(value.labels)) return value;\n    if ('output' in value) return parseAiOutput(value.output);\n  }\n  if (typeof value === 'string') {\n    return JSON.parse(extractJsonText(value));\n  }\n  return value;\n}\n\nfunction normalizeCategory(parsed) {\n  if (parsed?.category && typeof parsed.category === 'object') {\n    return {\n      name: String(parsed.category.name ?? parsed.category.label ?? ''),\n      confidence: clampConfidence(parsed.category.confidence),\n    };\n  }\n\n  const labels = Array.isArray(parsed?.labels) ? parsed.labels : [];\n  for (const item of labels) {\n    const name = String(item?.label ?? item?.name ?? '');\n    const confidence = clampConfidence(item?.confidence);\n    if (allowed.includes(name) && confidence >= MIN_CONFIDENCE) {\n      return { name, confidence };\n    }\n  }\n\n  const fallbackConfidence = labels.length > 0\n    ? clampConfidence(labels[0]?.confidence)\n    : 0;\n  return { name: 'uncertain', confidence: fallbackConfidence };\n}\n\nlet parsed;\ntry {\n  parsed = parseAiOutput($json.output ?? $json);\n} catch (error) {\n  parsed = {\n    category: { name: 'uncertain', confidence: 0 },\n    reason: 'format violation or instruction conflict',\n  };\n}\n\nconst parsedCategory = normalizeCategory(parsed);\nconst acceptedCategory = allowed.includes(parsedCategory.name) && parsedCategory.confidence >= MIN_CONFIDENCE\n  ? parsedCategory\n  : { name: 'uncertain', confidence: parsedCategory.confidence };\n\nconst accepted = acceptedCategory.name === 'uncertain'\n  ? []\n  : [{ label: acceptedCategory.name, confidence: acceptedCategory.confidence }];\n\nconst reason = String(\n  parsed?.reason ?? (accepted.length ? 'Classifier returned a matching category' : 'No category reached confidence threshold'),\n).slice(0, 240);\nconst labelPrefix = source.labelPrefix || 'Labels';\nconst stateLabel = source.stateLabel || 'Classified';\nconst labelMailboxes = accepted.map((item) => `${labelPrefix}/${item.label}`);\nconst stateMailbox = `${labelPrefix}/${stateLabel}`;\nconst targetMailboxes = [...labelMailboxes];\nif (!targetMailboxes.includes(stateMailbox)) targetMailboxes.push(stateMailbox);\n\nreturn [{\n  json: {\n    ...source,\n    runMode: 'apply_labels',\n    classification: {\n      category: acceptedCategory,\n      labels: accepted.length ? accepted : [{ label: 'uncertain', confidence: acceptedCategory.confidence }],\n      reason,\n    },\n    category: acceptedCategory,\n    labels: accepted,\n    labelMailboxes,\n    stateMailbox,\n    targetMailboxes,\n  },\n}];\n"
       }
     },
     {
@@ -349,7 +373,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1400,
+        1530,
         360
       ],
       "parameters": {
@@ -380,7 +404,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1660,
+        1790,
         260
       ],
       "parameters": {
@@ -395,7 +419,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1660,
+        1790,
         520
       ],
       "parameters": {
@@ -410,7 +434,7 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.3,
       "position": [
-        1270,
+        1400,
         360
       ],
       "parameters": {
@@ -466,6 +490,48 @@
       "parameters": {
         "language": "javaScript",
         "jsCode": "const DEFAULT_OLLAMA_BASE_URL = 'http://192.168.1.100:11434';\nconst DEFAULT_EMBEDDING_MODEL = 'embeddinggemma';\n\nfunction trimTrailingSlash(value) {\n  return String(value || '').replace(/\\/+$/, '');\n}\n\nfunction numberOrNull(value) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) ? parsed : null;\n}\n\nfunction embeddingVectorFromResponse(responseJson) {\n  if (Array.isArray(responseJson?.embeddings?.[0])) return responseJson.embeddings[0];\n  if (Array.isArray(responseJson?.embedding)) return responseJson.embedding;\n  return [];\n}\n\nasync function embedItem(json) {\n  const {\n    embedding,\n    embeddings,\n    embeddingVector,\n    ...safeJson\n  } = json;\n  const cleanEmailText = String(safeJson.cleanEmailText || '').trim();\n  const model = String(safeJson.embeddingModel || DEFAULT_EMBEDDING_MODEL);\n\n  if (!cleanEmailText) {\n    return {\n      ...safeJson,\n      emailEmbedding: {\n        status: 'skipped_empty_input',\n        model,\n        dimensions: 0,\n      },\n    };\n  }\n\n  const baseUrl = trimTrailingSlash(\n    safeJson.embeddingBaseUrl || safeJson.ollamaBaseUrl || DEFAULT_OLLAMA_BASE_URL,\n  );\n  const response = await fetch(`${baseUrl}/api/embed`, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      model,\n      input: cleanEmailText,\n      truncate: true,\n    }),\n  });\n\n  if (!response.ok) {\n    throw new Error(`Ollama embedding request failed with HTTP ${response.status}`);\n  }\n\n  let responseJson;\n  try {\n    responseJson = await response.json();\n  } catch {\n    throw new Error(`Ollama embedding response was not valid JSON (HTTP ${response.status})`);\n  }\n  const vector = embeddingVectorFromResponse(responseJson);\n  if (!Array.isArray(vector) || vector.length === 0) {\n    throw new Error('Ollama embedding response did not include an embedding vector');\n  }\n\n  return {\n    ...safeJson,\n    emailEmbedding: {\n      status: 'ok',\n      model: String(responseJson.model || model),\n      dimensions: vector.length,\n      promptEvalCount: numberOrNull(responseJson.prompt_eval_count),\n      totalDuration: numberOrNull(responseJson.total_duration),\n    },\n  };\n}\n\nconst results = [];\nfor (const item of $input.all()) {\n  results.push({ json: await embedItem(item.json ?? {}) });\n}\n\nreturn results;\n"
+      }
+    },
+    {
+      "id": "e5f83dc9-d89b-4d6d-8399-8f7f7b0d61a1",
+      "name": "Plan email actions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        520
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const item = $input.first()?.json ?? {};\n\nreturn [{\n  json: {\n    ...item,\n    emailAction: {\n      action: 'none',\n      destinationMailbox: '',\n      reason: 'planner_not_configured',\n      approved: false,\n      mode: item.emailActionsMode || 'live',\n    },\n    email_action_status: 'not_planned',\n    email_action_destination: '',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "2c2f6111-0922-45b9-8f78-441197ba4f78",
+      "name": "Execute email action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2050,
+        260
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const item = $input.first()?.json ?? {};\nconst action = item.emailAction && typeof item.emailAction === 'object'\n  ? item.emailAction\n  : {};\n\nreturn [{\n  json: {\n    ...item,\n    email_action_status: action.approved ? 'skipped_executor_pending' : 'skipped_no_action',\n    email_action_destination: action.destinationMailbox || '',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "eb97dbfe-891b-4cf7-a3ee-5c4f220d9fa3",
+      "name": "Execute email action (trigger)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2050,
+        520
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const item = $input.first()?.json ?? {};\nconst action = item.emailAction && typeof item.emailAction === 'object'\n  ? item.emailAction\n  : {};\n\nreturn [{\n  json: {\n    ...item,\n    email_action_status: action.approved ? 'skipped_executor_pending' : 'skipped_no_action',\n    email_action_destination: action.destinationMailbox || '',\n  },\n}];\n"
       }
     }
   ],
@@ -591,7 +657,7 @@
       "main": [
         [
           {
-            "node": "Inspect Proton label targets",
+            "node": "Plan email actions",
             "type": "main",
             "index": 0
           }
@@ -620,7 +686,7 @@
       "main": [
         [
           {
-            "node": "Loop Over Emails",
+            "node": "Execute email action",
             "type": "main",
             "index": 0
           }
@@ -676,6 +742,39 @@
         [
           {
             "node": "Build classification prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan email actions": {
+      "main": [
+        [
+          {
+            "node": "Inspect Proton label targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute email action": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Proton labels (trigger)": {
+      "main": [
+        [
+          {
+            "node": "Execute email action (trigger)",
             "type": "main",
             "index": 0
           }
