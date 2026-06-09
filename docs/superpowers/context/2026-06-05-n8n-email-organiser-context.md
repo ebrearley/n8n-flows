@@ -27,7 +27,19 @@ The bulk fetch path avoids full mailbox and classified-message preloads. It scan
 
 Proton Mail exposes UI labels as nested mailboxes under `Labels`. The workflow applies accepted labels as `Labels/<label>` and applies `Labels/Classified` to every classified email.
 
-The workflow must not create labels, create folders, move messages, delete messages, or expunge.
+During label application, the workflow must not create labels, create folders, move messages, delete messages, or expunge.
+
+## Email Action Phase
+
+The email action phase was designed on 2026-06-09. It moves selected messages after labels are applied. Actions are live by default, with optional `dry_run` and `disabled` modes.
+
+Verified action mailboxes from the live n8n runtime IMAP connection:
+
+- `Archive` (`\Archive`)
+- `Spam` (`\Junk`)
+- `Trash` (`\Trash`)
+
+The action executor must use `UID MOVE` and must not use `EXPUNGE`, folder creation, or delete fallbacks.
 
 ## Workflow Shape
 

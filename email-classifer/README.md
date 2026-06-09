@@ -82,9 +82,23 @@ Proton exposes UI labels through IMAP as mailboxes nested under the top-level `L
 
 `Classified` is the state marker and is applied as `Labels/Classified`.
 
-The workflow does not create labels, create folders, move source messages, delete source messages, or expunge. It applies labels by copying the message to existing `Labels/*` mailboxes and keeps the original message in `INBOX`.
+During label application, the workflow does not create labels, create folders, delete source messages, move source messages, or expunge. It applies labels by copying the message to existing `Labels/*` mailboxes, before any post-label action phase runs.
 
 `uncertain` is a classifier fallback only. It is not applied as a Proton label.
+
+## Proton Actions
+
+The workflow can move messages after classification and label application. Actions are live by default through `emailActionsMode=live`.
+
+Verified Proton Bridge IMAP action mailboxes:
+
+- archive: `Archive`
+- spam/junk: `Spam`
+- trash/bin: `Trash`
+
+The workflow plans actions in `Plan email actions`, then applies labels first, then runs `Execute email action` or `Execute email action (trigger)`.
+
+The executor uses `UID MOVE` only. It does not create folders, hard delete, or expunge. If an action is ambiguous, the destination mailbox is missing, or required date evidence is invalid, it skips the move and leaves a visible action status.
 
 ## Required n8n Runtime
 
