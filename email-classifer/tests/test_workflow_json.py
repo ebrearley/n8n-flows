@@ -108,6 +108,50 @@ const input = { first: () => ({ json: item }) };
         )
         return json.loads(completed.stdout)
 
+    def run_prepare_then_plan_email_actions(self, classifier_output):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const prepareCode = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const planCode = workflow.nodes.find((node) => node.name === 'Plan email actions').parameters.jsCode;
+const classifierOutput = JSON.parse(process.argv[1]);
+const source = {
+  uid: 'synthetic-uid',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+  emailActionsMode: 'live',
+  actionNow: '2026-06-09T12:00:00+10:00',
+  actionArchiveMailbox: 'Archive',
+  actionSpamMailbox: 'Spam',
+  actionTrashMailbox: 'Trash',
+};
+const aiOutput = { output: JSON.stringify(classifierOutput) };
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const prepared = await new AsyncFunction('$', '$json', prepareCode)(dollar, aiOutput);
+  const planned = await new AsyncFunction('$input', planCode)({ first: () => prepared[0] });
+  console.log(JSON.stringify({ prepared: prepared[0].json, planned: planned[0].json }));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script, json.dumps(classifier_output)],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
     def test_imap_action_nodes_are_javascript_code_nodes(self):
         nodes = self.nodes_by_name()
 
@@ -311,6 +355,53 @@ const input = { first: () => ({ json: item }) };
 
         self.assertEqual(result["emailAction"]["action"], "none")
         self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_prepare_then_plan_keeps_schedule_events_without_valid_time(self):
+        cases = {
+            "omitted": {},
+            "null": {"event_time": None},
+            "natural_language": {
+                "event_time": "Wedding at Brunswick Town Hall, ask Alex for the private address",
+            },
+            "impossible_calendar": {"event_time": "2026-02-31T12:00:00+10:00"},
+        }
+
+        for name, event_hint in cases.items():
+            with self.subTest(name=name):
+                result = self.run_prepare_then_plan_email_actions({
+                    "labels": [{"label": "Schedule", "confidence": 0.91}],
+                    "action_hints": {
+                        "event_notice": True,
+                        **event_hint,
+                    },
+                    "reason": "Synthetic schedule classification",
+                })
+
+                self.assertIsNone(result["prepared"]["actionHints"]["event_time"])
+                self.assertEqual(result["planned"]["emailAction"]["action"], "none")
+                self.assertIs(result["planned"]["emailAction"]["approved"], False)
+
+    def test_prepare_then_plan_keeps_successful_backup_without_boolean_has_errors(self):
+        cases = {
+            "omitted": {},
+            "string_false": {"has_errors": "false"},
+        }
+
+        for name, error_hint in cases.items():
+            with self.subTest(name=name):
+                result = self.run_prepare_then_plan_email_actions({
+                    "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+                    "action_hints": {
+                        "backup_job": True,
+                        "backup_status": "success",
+                        **error_hint,
+                    },
+                    "reason": "Synthetic backup classification",
+                })
+
+                self.assertIsNone(result["prepared"]["actionHints"]["has_errors"])
+                self.assertEqual(result["planned"]["emailAction"]["action"], "none")
+                self.assertIs(result["planned"]["emailAction"]["approved"], False)
 
     def test_plan_email_actions_uses_spam_precedence(self):
         result = self.run_plan_email_actions({

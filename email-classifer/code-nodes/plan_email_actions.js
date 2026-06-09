@@ -22,6 +22,8 @@ function hintsOf(source) {
 }
 
 function parseDate(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed;
