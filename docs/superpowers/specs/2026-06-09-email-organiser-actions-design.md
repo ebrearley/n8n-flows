@@ -196,4 +196,3 @@ Required coverage:
 - dry-run mode reports `would_move` without moving;
 - workflow JSON wires `Plan email actions` and action executors into both bulk and trigger paths;
 - both `workflow.json` and `workflow-imap-trigger.json` stay in sync.
-

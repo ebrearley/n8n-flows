@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -62,6 +63,15 @@ class WorkflowJsonTests(unittest.TestCase):
             for assignment in node["parameters"]["assignments"]["assignments"]
         }
         return assignments["systemPrompt"]["value"]
+
+    def system_prompt_value(self):
+        return self.build_prompt_assignments()["systemPrompt"]["value"]
+
+    def system_prompt_json_snippets(self):
+        snippets = []
+        for match in re.finditer(r"```json\n([\s\S]*?)\n```", self.system_prompt_value()):
+            snippets.append(json.loads(match.group(1)))
+        return snippets
 
     def load_workflow_updater(self):
         updater_path = ROOT / "tools" / "apply_email_action_workflow_updates.py"
@@ -916,6 +926,21 @@ const input = { all: () => inputs };
         self.assertNotIn("Also include an `action_hints` object", schema_section)
         self.assertNotIn("must match output exactly", value)
 
+    def test_system_prompt_keeps_category_schema_with_action_hints(self):
+        schema_section = self.system_prompt_value().split("## Schema", 1)[1].split("## Rules", 1)[0]
+
+        self.assertIn('"category": { "name": string, "confidence": number }', schema_section)
+        self.assertIn('"reason": string,', schema_section)
+        self.assertIn('"action_hints": {', schema_section)
+        self.assertIn('"two_factor_code": boolean', schema_section)
+        self.assertNotIn('"labels": [', schema_section)
+
+    def test_system_prompt_marks_uncertain_as_fallback_only(self):
+        value = self.system_prompt_value()
+
+        self.assertIn("`category.name` must exactly match one allowed category, or be `uncertain`.", value)
+        self.assertIn('{"category":{"name":"uncertain","confidence":0.0}', value)
+
     def test_prepare_targets_accepts_schedule_and_spam_like_labels(self):
         script = r"""
 const fs = require('fs');
@@ -1169,6 +1194,57 @@ const dollar = (name) => {
         self.assertNotIn("ignored_extra_field", result["actionHints"])
         self.assertEqual(result["classification"]["action_hints"], result["actionHints"])
 
+    def test_prepare_targets_preserves_zulu_action_hint_event_time(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '104',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [{ label: 'Schedule', confidence: 0.9 }],
+    action_hints: {
+      event_notice: true,
+      event_time: '2026-06-09T08:00:00Z',
+    },
+    reason: 'Valid UTC event time should be preserved'
+  })
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["actionHints"]["event_time"], "2026-06-09T08:00:00Z")
+        self.assertEqual(
+            result["classification"]["action_hints"]["event_time"],
+            "2026-06-09T08:00:00Z",
+        )
+
     def test_prepare_targets_drops_invalid_action_hint_event_time(self):
         script = r"""
 const fs = require('fs');
@@ -1190,6 +1266,54 @@ const aiOutput = {
       event_time: 'Wedding at Brunswick Town Hall, ask Alex for the private address',
     },
     reason: 'Invitation with a natural-language event description'
+  })
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertIsNone(result["actionHints"]["event_time"])
+        self.assertIsNone(result["classification"]["action_hints"]["event_time"])
+
+    def test_prepare_targets_drops_impossible_calendar_action_hint_event_time(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '103',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [{ label: 'Schedule', confidence: 0.9 }],
+    action_hints: {
+      event_notice: true,
+      event_time: '2026-02-31T12:00:00+10:00',
+    },
+    reason: 'Impossible calendar date should not be preserved'
   })
 };
 const dollar = (name) => {
