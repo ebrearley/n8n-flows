@@ -1,5 +1,21 @@
 const item = $input.first()?.json ?? {};
 const HOURS_24_MS = 24 * 60 * 60 * 1000;
+const ALLOWED_LABELS = new Set([
+  'Invoice',
+  'Purchase',
+  'Bill',
+  'Payment',
+  'Marketing',
+  'Cold email',
+  'Important',
+  'Awaiting reply',
+  'Travel',
+  'Ticket',
+  'Infrastructure',
+  'Hustle',
+  'Schedule',
+  'Spam like',
+]);
 
 function stringValue(value, fallback = '') {
   if (value === undefined || value === null || value === '') return fallback;
@@ -13,12 +29,16 @@ function actionMode(value) {
 
 function labelsOf(source) {
   if (!Array.isArray(source.labels)) return new Set();
-  return new Set(source.labels.map((label) => label?.label).filter(Boolean));
+  return new Set(source.labels.map((label) => label?.label).filter((label) => ALLOWED_LABELS.has(label)));
 }
 
 function hintsOf(source) {
   const hints = source.actionHints || source.action_hints || source.classification?.action_hints || {};
   return hints && typeof hints === 'object' ? hints : {};
+}
+
+function hasUncertainLabel(labels) {
+  return Array.isArray(labels) && labels.some((label) => label?.label === 'uncertain');
 }
 
 function parseDate(value) {
@@ -27,6 +47,42 @@ function parseDate(value) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed;
+}
+
+function isLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function daysInMonth(year, month) {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  if ([4, 6, 9, 11].includes(month)) return 30;
+  return 31;
+}
+
+function isValidIsoDateTimeWithTimezone(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?(Z|[+-](\d{2}):(\d{2}))$/);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  const offsetHour = match[8] === undefined ? 0 : Number(match[8]);
+  const offsetMinute = match[9] === undefined ? 0 : Number(match[9]);
+
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth(year, month)) return false;
+  if (hour > 23 || minute > 59 || second > 59) return false;
+  if (offsetHour > 23 || offsetMinute > 59) return false;
+
+  return true;
+}
+
+function parseEventTime(value) {
+  if (!isValidIsoDateTimeWithTimezone(value)) return null;
+  return parseDate(value);
 }
 
 function noAction(reason, mode) {
@@ -53,7 +109,7 @@ const mode = actionMode(item.emailActionsMode ?? item.email_actions_mode);
 const labelNames = labelsOf(item);
 const actionHints = hintsOf(item);
 const classificationLabels = Array.isArray(item.classification?.labels) ? item.classification.labels : [];
-const hasUncertainClassification = classificationLabels.some((label) => label?.label === 'uncertain');
+const hasUncertainClassification = hasUncertainLabel(item.labels) || hasUncertainLabel(classificationLabels);
 const now = parseDate(item.actionNow || item.workflowNow || item.now) || new Date();
 const archiveMailbox = stringValue(item.actionArchiveMailbox, 'Archive');
 const spamMailbox = stringValue(item.actionSpamMailbox, 'Spam');
@@ -77,7 +133,7 @@ if (mode === 'disabled') {
     emailAction = noAction(emailDate ? 'two_factor_code_still_recent' : 'invalid_email_date', mode);
   }
 } else if (labelNames.has('Schedule') && actionHints.event_notice === true) {
-  const eventTime = parseDate(actionHints.event_time);
+  const eventTime = parseEventTime(actionHints.event_time);
   if (eventTime && eventTime.getTime() < now.getTime()) {
     emailAction = approved('archive', archiveMailbox, 'past_event', mode);
   } else {

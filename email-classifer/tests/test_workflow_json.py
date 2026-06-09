@@ -318,6 +318,21 @@ const dollar = (name) => {
         self.assertEqual(result["emailAction"]["reason"], "invalid_event_time")
         self.assertIs(result["emailAction"]["approved"], False)
 
+    def test_plan_email_actions_keeps_impossible_calendar_event_time(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Schedule"}],
+            "actionHints": {
+                "event_notice": True,
+                "event_time": "2026-02-31T12:00:00+10:00",
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertEqual(result["emailAction"]["reason"], "invalid_event_time")
+        self.assertIs(result["emailAction"]["approved"], False)
+
     def test_plan_email_actions_keeps_non_success_backup_statuses(self):
         for status in ("failure", "warning", "partial", "error", "unknown"):
             with self.subTest(status=status):
@@ -363,6 +378,25 @@ const dollar = (name) => {
 
         self.assertEqual(result["emailAction"]["action"], "none")
         self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_two_factor_with_invalid_direct_labels(self):
+        cases = {
+            "uncertain": [{"label": "uncertain", "confidence": 0}],
+            "unknown": [{"label": "Unknown label", "confidence": 0.99}],
+        }
+
+        for name, labels in cases.items():
+            with self.subTest(name=name):
+                result = self.run_plan_email_actions({
+                    "emailActionsMode": "live",
+                    "actionNow": "2026-06-09T12:00:00+10:00",
+                    "date": "Mon, 08 Jun 2026 10:00:00 +1000",
+                    "labels": labels,
+                    "actionHints": {"two_factor_code": True},
+                })
+
+                self.assertEqual(result["emailAction"]["action"], "none")
+                self.assertIs(result["emailAction"]["approved"], False)
 
     def test_prepare_then_plan_keeps_schedule_events_without_valid_time(self):
         cases = {
