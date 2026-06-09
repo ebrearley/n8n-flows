@@ -164,7 +164,7 @@ const $ = (name) => {
     def test_configure_node_defines_credential_pair_list(self):
         assignments = self.configure_assignments()
         self.assertIn("imapPairsJson", assignments)
-        self.assertEqual(assignments["maxBatches"]["value"], 1)
+        self.assertEqual(assignments["maxBatches"]["value"], 0)
         self.assertEqual(assignments["rawFetchByteLimit"]["value"], 65536)
         self.assertEqual(assignments["fetchWatchdogMs"]["value"], 120000)
         self.assertEqual(assignments["uidSearchWindow"]["value"], 500)
@@ -409,7 +409,7 @@ const json = {
         assignments = self.configure_assignments()
         code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
 
-        self.assertEqual(assignments["maxBatches"]["value"], 1)
+        self.assertEqual(assignments["maxBatches"]["value"], 0)
         self.assertIn("maxBatches", code)
         self.assertIn("max_batches_reached", code)
         self.assertIn("runIndex >= defaults.maxBatches", code)
@@ -454,10 +454,10 @@ const json = {
             "Telemetry finish run",
         )
 
-    def test_backfill_defaults_to_one_batch_per_execution(self):
+    def test_backfill_defaults_to_unbounded_batches(self):
         assignments = self.configure_assignments()
 
-        self.assertEqual(assignments["maxBatches"]["value"], 1)
+        self.assertEqual(assignments["maxBatches"]["value"], 0)
 
     def test_bulk_loop_collects_prepared_labels_before_batch_apply(self):
         workflow = self.load_workflow()

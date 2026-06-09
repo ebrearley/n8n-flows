@@ -58,7 +58,7 @@
             {
               "id": "max-batches",
               "name": "maxBatches",
-              "value": 1,
+              "value": 0,
               "type": "number"
             },
             {
