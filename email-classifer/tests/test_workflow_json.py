@@ -575,6 +575,25 @@ const json = {
         )
         self.assertEqual(result[0]["json"]["resetLoop"], False)
 
+        prepare_result = self.run_workflow_code_node(
+            "Prepare Proton label targets",
+            [{"json": {"output": '{"labels":[{"label":"Important","confidence":0.9}],"reason":"Relevant"}'}}],
+            {
+                "Build classification prompt": [
+                    {
+                        "json": {
+                            "uid": "101",
+                            "sourceFlow": "bulk",
+                            "resetLoop": True,
+                            "labelPrefix": "Labels",
+                            "stateLabel": "Classified",
+                        },
+                    },
+                ],
+            },
+        )
+        self.assertEqual(prepare_result[0]["json"]["resetLoop"], False)
+
     def test_tls_servername_is_not_set_for_ip_hosts(self):
         nodes = self.nodes_by_name()
 

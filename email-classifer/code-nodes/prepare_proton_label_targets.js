@@ -112,6 +112,7 @@ return [{
   json: {
     ...source,
     runMode: 'apply_labels',
+    resetLoop: false,
     classification: {
       labels: accepted.length ? accepted : [{ label: 'uncertain', confidence: fallbackConfidence }],
       suggested_labels: suggestedLabels,
