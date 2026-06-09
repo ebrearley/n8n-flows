@@ -252,6 +252,66 @@ const input = { first: () => ({ json: item }) };
         self.assertEqual(success["emailAction"]["reason"], "successful_backup")
         self.assertEqual(warning["emailAction"]["action"], "none")
 
+    def test_plan_email_actions_keeps_schedule_event_without_time(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Schedule", "confidence": 0.91}],
+            "actionHints": {
+                "event_notice": True,
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertEqual(result["emailAction"]["reason"], "invalid_event_time")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_non_success_backup_statuses(self):
+        for status in ("failure", "warning", "partial", "error", "unknown"):
+            with self.subTest(status=status):
+                result = self.run_plan_email_actions({
+                    "emailActionsMode": "live",
+                    "actionNow": "2026-06-09T12:00:00+10:00",
+                    "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+                    "actionHints": {
+                        "backup_job": True,
+                        "backup_status": status,
+                        "has_errors": False,
+                    },
+                })
+
+                self.assertEqual(result["emailAction"]["action"], "none")
+                self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_backup_with_missing_has_errors(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+            "actionHints": {
+                "backup_job": True,
+                "backup_status": "success",
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_backup_with_malformed_has_errors(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+            "actionHints": {
+                "backup_job": True,
+                "backup_status": "success",
+                "has_errors": "false",
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertIs(result["emailAction"]["approved"], False)
+
     def test_plan_email_actions_uses_spam_precedence(self):
         result = self.run_plan_email_actions({
             "emailActionsMode": "live",

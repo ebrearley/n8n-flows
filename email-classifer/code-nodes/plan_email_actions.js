@@ -79,7 +79,7 @@ if (mode === 'disabled') {
   labelNames.has('Infrastructure')
   && actionHints.backup_job === true
   && actionHints.backup_status === 'success'
-  && actionHints.has_errors !== true
+  && actionHints.has_errors === false
 ) {
   emailAction = approved('archive', archiveMailbox, 'successful_backup', mode);
 }
