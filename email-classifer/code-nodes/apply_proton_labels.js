@@ -156,6 +156,11 @@ class ImapClient {
     await this.command(`UID COPY ${uid} ${quoteString(destination)}`, 120000);
   }
 
+  async copyUids(uids, destination) {
+    if (uids.length === 0) return;
+    await this.command(`UID COPY ${uids.join(',')} ${quoteString(destination)}`, 120000);
+  }
+
   async logout() {
     try {
       await this.command('LOGOUT', 10000);
@@ -250,90 +255,196 @@ function loopbackPayload(item, fields) {
   };
 }
 
-const item = $input.first()?.json ?? {};
-const pair = normalizeCredentialPair(item);
-const targetMailboxes = Array.isArray(item.targetMailboxes)
-  ? item.targetMailboxes
-  : [
-      ...(Array.isArray(item.labelMailboxes) ? item.labelMailboxes : []),
-      `${pair.labelPrefix}/${pair.stateLabel}`,
-    ];
+const PRIVATE_BATCH_RESULT_FIELDS = new Set([
+  'email_body',
+  'body_preview',
+  'raw',
+  'raw_content',
+  'userPrompt',
+  'systemPrompt',
+  'output',
+  'classifier_output',
+  'classification_raw_response',
+]);
 
-const uniqueTargets = [...new Set(targetMailboxes.filter(Boolean))];
-const dryRun = boolValue(item.dryRun, false);
-
-if (dryRun) {
-  return [{
-    json: loopbackPayload(item, {
-      destination_actions: Object.fromEntries(uniqueTargets.map((target) => [target, 'would_apply_label'])),
-      source_action: 'would_keep_in_source',
-    }),
-  }];
-}
-
-const username = envValue(pair.userVar);
-const password = envValue(pair.passwordVar);
-if (!username || !password) {
-  throw new Error(`Credential pair ${pair.id} requires n8n variables ${pair.userVar} and ${pair.passwordVar}.`);
-}
-
-const config = {
-  host: envValue(pair.hostVar) || pair.host,
-  port: numberValue(envValue(pair.portVar) || pair.port, pair.port, `Credential pair ${pair.id} port`),
-  ssl: pair.ssl,
-  startTls: pair.startTls,
-  allowUnauthorizedCerts: pair.allowUnauthorizedCerts,
-};
-
-const sourceMailbox = String(configValue(item, 'sourceMailbox', 'INBOX'));
-const client = new ImapClient(config);
-const destinationActions = {};
-
-try {
-  await client.connect();
-  await client.login(username, password);
-
-  const missingMailboxes = [];
-  for (const mailbox of uniqueTargets) {
-    if (!(await client.mailboxExists(mailbox))) {
-      missingMailboxes.push(mailbox);
-    }
+function compactBatchResult(item) {
+  const compact = {};
+  for (const [key, value] of Object.entries(item || {})) {
+    if (!PRIVATE_BATCH_RESULT_FIELDS.has(key)) compact[key] = value;
   }
+  return compact;
+}
 
-  if (missingMailboxes.length > 0) {
+function targetMailboxesFor(item, pair) {
+  const targetMailboxes = Array.isArray(item.targetMailboxes)
+    ? item.targetMailboxes
+    : [
+        ...(Array.isArray(item.labelMailboxes) ? item.labelMailboxes : []),
+        `${pair.labelPrefix}/${pair.stateLabel}`,
+      ];
+
+  return [...new Set(targetMailboxes.filter(Boolean))];
+}
+
+function isBatchPayload(item) {
+  return Array.isArray(item.label_batch_items);
+}
+
+function outputItems(root, results) {
+  if (isBatchPayload(root)) {
     return [{
-      json: loopbackPayload(item, {
-        label_application_skipped: true,
-        missingMailboxes,
-        destination_actions: Object.fromEntries(
-          uniqueTargets.map((target) => [target, 'skipped_missing_mailbox']),
-        ),
+      json: {
+        ...root,
+        runMode: 'apply_label_batch',
+        label_batch_results: results.map(compactBatchResult),
+        total_emails: results.length,
         source_action: 'kept_in_source',
-      }),
+      },
     }];
   }
 
-  let uid = String(item.uid || '');
-  if (!uid && item.message_id) {
-    const matches = await client.searchMessageId(sourceMailbox, item.message_id);
-    uid = matches.at(-1) || '';
-  }
-  if (!uid) {
-    throw new Error('Email item did not include an IMAP UID or searchable Message-ID.');
-  }
-
-  await client.select(sourceMailbox);
-  for (const mailbox of uniqueTargets) {
-    await client.copyUid(uid, mailbox);
-    destinationActions[mailbox] = 'label_applied';
-  }
-} finally {
-  await client.logout().catch(() => {});
+  return results.map((result) => ({ json: result }));
 }
 
-return [{
-  json: loopbackPayload(item, {
-    destination_actions: destinationActions,
-    source_action: 'kept_in_source',
-  }),
-}];
+function groupKey(pair, sourceMailbox) {
+  return JSON.stringify({
+    id: pair.id,
+    host: envValue(pair.hostVar) || pair.host,
+    port: envValue(pair.portVar) || pair.port,
+    ssl: pair.ssl,
+    startTls: pair.startTls,
+    allowUnauthorizedCerts: pair.allowUnauthorizedCerts,
+    userVar: pair.userVar,
+    passwordVar: pair.passwordVar,
+    sourceMailbox,
+  });
+}
+
+function clientConfig(pair) {
+  return {
+    host: envValue(pair.hostVar) || pair.host,
+    port: numberValue(envValue(pair.portVar) || pair.port, pair.port, `Credential pair ${pair.id} port`),
+    ssl: pair.ssl,
+    startTls: pair.startTls,
+    allowUnauthorizedCerts: pair.allowUnauthorizedCerts,
+  };
+}
+
+const root = $input.first()?.json ?? {};
+const inputItems = isBatchPayload(root)
+  ? root.label_batch_items
+  : $input.all().map((item) => item.json ?? {});
+const emails = inputItems.map((item) => ({
+  ...item,
+  dryRun: item.dryRun ?? root.dryRun,
+  telemetry: item.telemetry || root.telemetry || {},
+}));
+
+const dryRun = boolValue(root.dryRun, false) || emails.every((item) => boolValue(item.dryRun, false));
+const results = emails.map((item) => loopbackPayload(item, {
+  destination_actions: {},
+  source_action: dryRun ? 'would_keep_in_source' : 'kept_in_source',
+}));
+
+if (dryRun) {
+  for (let index = 0; index < emails.length; index += 1) {
+    const item = emails[index];
+    const pair = normalizeCredentialPair(item);
+    const uniqueTargets = targetMailboxesFor(item, pair);
+    results[index] = loopbackPayload(item, {
+      destination_actions: Object.fromEntries(uniqueTargets.map((target) => [target, 'would_apply_label'])),
+      source_action: 'would_keep_in_source',
+    });
+  }
+
+  return outputItems(root, results);
+}
+
+const groups = new Map();
+for (let index = 0; index < emails.length; index += 1) {
+  const item = emails[index];
+  const pair = normalizeCredentialPair(item);
+  const sourceMailbox = String(configValue(item, 'sourceMailbox', 'INBOX'));
+  const key = groupKey(pair, sourceMailbox);
+  if (!groups.has(key)) {
+    groups.set(key, { pair, sourceMailbox, entries: [] });
+  }
+  groups.get(key).entries.push({ index, item, pair });
+}
+
+for (const group of groups.values()) {
+  const { pair, sourceMailbox, entries } = group;
+  const username = envValue(pair.userVar);
+  const password = envValue(pair.passwordVar);
+  if (!username || !password) {
+    throw new Error(`Credential pair ${pair.id} requires n8n variables ${pair.userVar} and ${pair.passwordVar}.`);
+  }
+
+  const client = new ImapClient(clientConfig(pair));
+  const mailboxExists = new Map();
+  const copiesByMailbox = new Map();
+
+  try {
+    await client.connect();
+    await client.login(username, password);
+
+    async function targetExists(mailbox) {
+      if (!mailboxExists.has(mailbox)) {
+        mailboxExists.set(mailbox, await client.mailboxExists(mailbox));
+      }
+      return mailboxExists.get(mailbox);
+    }
+
+    for (const { index, item } of entries) {
+      const uniqueTargets = targetMailboxesFor(item, pair);
+      const missingMailboxes = [];
+      for (const mailbox of uniqueTargets) {
+        if (!(await targetExists(mailbox))) missingMailboxes.push(mailbox);
+      }
+
+      if (missingMailboxes.length > 0) {
+        results[index] = loopbackPayload(item, {
+          label_application_skipped: true,
+          missingMailboxes,
+          destination_actions: Object.fromEntries(
+            uniqueTargets.map((target) => [target, 'skipped_missing_mailbox']),
+          ),
+          source_action: 'kept_in_source',
+        });
+        continue;
+      }
+
+      let uid = String(item.uid || '');
+      if (!uid && item.message_id) {
+        const matches = await client.searchMessageId(sourceMailbox, item.message_id);
+        uid = matches.at(-1) || '';
+      }
+      if (!uid) {
+        throw new Error('Email item did not include an IMAP UID or searchable Message-ID.');
+      }
+
+      results[index] = loopbackPayload(item, {
+        destination_actions: Object.fromEntries(uniqueTargets.map((target) => [target, 'label_pending'])),
+        source_action: 'kept_in_source',
+      });
+
+      for (const mailbox of uniqueTargets) {
+        if (!copiesByMailbox.has(mailbox)) copiesByMailbox.set(mailbox, []);
+        copiesByMailbox.get(mailbox).push({ index, uid });
+      }
+    }
+
+    await client.select(sourceMailbox);
+    for (const [mailbox, copies] of copiesByMailbox.entries()) {
+      const uids = copies.map((copy) => copy.uid);
+      await client.copyUids(uids, mailbox);
+      for (const { index } of copies) {
+        results[index].destination_actions[mailbox] = 'label_applied';
+      }
+    }
+  } finally {
+    await client.logout().catch(() => {});
+  }
+}
+
+return outputItems(root, results);

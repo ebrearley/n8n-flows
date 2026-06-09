@@ -220,6 +220,98 @@ const $ = (name) => {
             self.assertIn("skipped_missing_mailbox", code)
             self.assertNotIn("Required Proton label mailbox does not exist", code)
 
+    def test_apply_proton_labels_processes_label_batch_items(self):
+        result = self.run_workflow_code_node(
+            "Apply Proton labels",
+            [
+                {
+                    "json": {
+                        "dryRun": True,
+                        "telemetry": {"run_id": "run-1"},
+                        "label_batch_items": [
+                            {
+                                "uid": "101",
+                                "email_item_id": "email-item-101",
+                                "email_body": "private body",
+                                "targetMailboxes": ["Labels/Classified"],
+                                "credentialPair": {"id": "imap-1"},
+                                "dryRun": True,
+                            },
+                            {
+                                "uid": "102",
+                                "email_item_id": "email-item-102",
+                                "email_body": "another private body",
+                                "targetMailboxes": ["Labels/Classified", "Labels/Important"],
+                                "credentialPair": {"id": "imap-1"},
+                                "dryRun": True,
+                            },
+                        ],
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(len(result), 1)
+        output = result[0]["json"]
+        self.assertEqual(output["runMode"], "apply_label_batch")
+        self.assertEqual(output["total_emails"], 2)
+        batch_results = output["label_batch_results"]
+        self.assertEqual([item["uid"] for item in batch_results], ["101", "102"])
+        self.assertEqual(
+            batch_results[0]["destination_actions"],
+            {"Labels/Classified": "would_apply_label"},
+        )
+        self.assertEqual(
+            batch_results[1]["destination_actions"],
+            {
+                "Labels/Classified": "would_apply_label",
+                "Labels/Important": "would_apply_label",
+            },
+        )
+        self.assertNotIn("email_body", batch_results[0])
+
+    def test_telemetry_label_actions_expand_batch_results(self):
+        result = self.run_workflow_code_node(
+            "Telemetry build label actions",
+            [
+                {
+                    "json": {
+                        "label_batch_results": [
+                            {
+                                "uid": "101",
+                                "email_item_id": "email-item-101",
+                                "recipient_email": "recipient@example.test",
+                                "destination_actions": {
+                                    "Labels/Classified": "label_applied",
+                                },
+                                "telemetry": {"run_id": "run-1"},
+                            },
+                            {
+                                "uid": "102",
+                                "email_item_id": "email-item-102",
+                                "recipient_email": "recipient@example.test",
+                                "destination_actions": {
+                                    "Labels/Classified": "label_applied",
+                                    "Labels/Important": "label_applied",
+                                },
+                                "telemetry": {"run_id": "run-1"},
+                            },
+                        ],
+                    },
+                },
+            ],
+        )
+
+        params = [item["json"]["label_action_params"] for item in result]
+        self.assertEqual(
+            [(param[1], param[2], param[3], param[4]) for param in params],
+            [
+                ("email-item-101", "Labels/Classified", "success", "101"),
+                ("email-item-102", "Labels/Classified", "success", "102"),
+                ("email-item-102", "Labels/Important", "success", "102"),
+            ],
+        )
+
     def test_email_items_include_recipient_fields_for_missing_label_debugging(self):
         nodes = self.nodes_by_name()
         fetch_code = nodes["Get next 50 unclassified emails"]["parameters"]["jsCode"]
