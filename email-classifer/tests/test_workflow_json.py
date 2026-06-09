@@ -182,6 +182,26 @@ const dollar = (name) => {
             self.assertEqual(nodes[name]["type"], "n8n-nodes-base.code")
             self.assertEqual(nodes[name]["parameters"]["language"], "javaScript")
 
+    def test_code_node_sources_match_workflow_exports(self):
+        workflows = [
+            self.load_workflow(),
+            json.loads((ROOT / "workflow-imap-trigger.json").read_text(encoding="utf-8")),
+        ]
+        source_files = {
+            "Plan email actions": "plan_email_actions.js",
+            "Prepare Proton label targets": "prepare_proton_label_targets.js",
+            "Execute email action": "execute_email_action.js",
+            "Execute email action (trigger)": "execute_email_action.js",
+        }
+
+        for workflow in workflows:
+            nodes = {node["name"]: node for node in workflow["nodes"]}
+            for node_name, source_file in source_files.items():
+                with self.subTest(workflow=workflow["name"], node=node_name):
+                    expected = (ROOT / "code-nodes" / source_file).read_text(encoding="utf-8")
+                    actual = nodes[node_name]["parameters"]["jsCode"]
+                    self.assertEqual(actual, expected)
+
     def test_email_action_nodes_are_wired_after_label_target_preparation(self):
         workflow = self.load_workflow()
 
@@ -322,7 +342,7 @@ const dollar = (name) => {
         result = self.run_plan_email_actions({
             "emailActionsMode": "live",
             "actionNow": "2026-06-09T12:00:00+10:00",
-            "labels": [{"label": "Schedule"}],
+            "labels": [{"label": "Schedule", "confidence": 0.91}],
             "actionHints": {
                 "event_notice": True,
                 "event_time": "2026-02-31T12:00:00+10:00",
@@ -331,6 +351,18 @@ const dollar = (name) => {
 
         self.assertEqual(result["emailAction"]["action"], "none")
         self.assertEqual(result["emailAction"]["reason"], "invalid_event_time")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_requires_label_confidence_threshold(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Spam like", "confidence": 0.01}],
+            "actionHints": {},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertEqual(result["emailAction"]["reason"], "no_accepted_labels")
         self.assertIs(result["emailAction"]["approved"], False)
 
     def test_plan_email_actions_keeps_non_success_backup_statuses(self):
@@ -378,6 +410,25 @@ const dollar = (name) => {
 
         self.assertEqual(result["emailAction"]["action"], "none")
         self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_two_factor_with_invalid_email_dates(self):
+        for date_value in (
+            "Mon, 31 Feb 2026 12:00:00 +1000",
+            "Mon, 00 Jun 2026 12:00:00 +1000",
+            "Mon, 08 Bog 2026 12:00:00 +1000",
+        ):
+            with self.subTest(date=date_value):
+                result = self.run_plan_email_actions({
+                    "emailActionsMode": "live",
+                    "actionNow": "2026-06-09T12:00:00+10:00",
+                    "date": date_value,
+                    "labels": [{"label": "Important", "confidence": 0.8}],
+                    "actionHints": {"two_factor_code": True},
+                })
+
+                self.assertEqual(result["emailAction"]["action"], "none")
+                self.assertEqual(result["emailAction"]["reason"], "invalid_email_date")
+                self.assertIs(result["emailAction"]["approved"], False)
 
     def test_plan_email_actions_keeps_two_factor_with_invalid_direct_labels(self):
         cases = {

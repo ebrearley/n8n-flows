@@ -16,6 +16,20 @@ const ALLOWED_LABELS = new Set([
   'Schedule',
   'Spam like',
 ]);
+const EMAIL_MONTHS = {
+  Jan: 1,
+  Feb: 2,
+  Mar: 3,
+  Apr: 4,
+  May: 5,
+  Jun: 6,
+  Jul: 7,
+  Aug: 8,
+  Sep: 9,
+  Oct: 10,
+  Nov: 11,
+  Dec: 12,
+};
 
 function stringValue(value, fallback = '') {
   if (value === undefined || value === null || value === '') return fallback;
@@ -27,9 +41,19 @@ function actionMode(value) {
   return ['live', 'dry_run', 'disabled'].includes(mode) ? mode : 'live';
 }
 
+function clampConfidence(value) {
+  const confidence = Number(value ?? 0);
+  if (!Number.isFinite(confidence)) return 0;
+  return Math.max(0, Math.min(1, confidence));
+}
+
 function labelsOf(source) {
   if (!Array.isArray(source.labels)) return new Set();
-  return new Set(source.labels.map((label) => label?.label).filter((label) => ALLOWED_LABELS.has(label)));
+  return new Set(
+    source.labels
+      .filter((label) => ALLOWED_LABELS.has(label?.label) && clampConfidence(label?.confidence) >= 0.75)
+      .map((label) => label.label),
+  );
 }
 
 function hintsOf(source) {
@@ -85,6 +109,35 @@ function parseEventTime(value) {
   return parseDate(value);
 }
 
+function parseEmailDate(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return parseDate(value);
+
+  const text = value.trim();
+  if (text === '') return null;
+  if (isValidIsoDateTimeWithTimezone(text)) return parseDate(text);
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) return null;
+
+  const match = text.match(/^(?:[A-Za-z]{3},\s*)?(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{2}):(\d{2})(?::(\d{2}))?\s+([+-])(\d{2})(\d{2})$/);
+  if (!match) return null;
+
+  const day = Number(match[1]);
+  const month = EMAIL_MONTHS[match[2]];
+  const year = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  const offsetHour = Number(match[8]);
+  const offsetMinute = Number(match[9]);
+
+  if (!month) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  if (offsetHour > 23 || offsetMinute > 59) return null;
+
+  return parseDate(text);
+}
+
 function noAction(reason, mode) {
   return {
     action: 'none',
@@ -126,7 +179,7 @@ if (mode === 'disabled') {
 } else if (labelNames.has('Spam like')) {
   emailAction = approved('move_to_spam', spamMailbox, 'spam_like', mode);
 } else if (actionHints.two_factor_code === true) {
-  const emailDate = parseDate(item.date || item.email_date || item.receivedAt);
+  const emailDate = parseEmailDate(item.date || item.email_date || item.receivedAt);
   if (emailDate && now.getTime() - emailDate.getTime() > HOURS_24_MS) {
     emailAction = approved('move_to_trash', trashMailbox, 'expired_two_factor_code', mode);
   } else {
