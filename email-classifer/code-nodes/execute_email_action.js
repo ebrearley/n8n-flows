@@ -128,7 +128,7 @@ class ImapClient {
       if (!match) return null;
       const end = match.index + match[0].length;
       const response = buffer.slice(0, end);
-      if (match[2] !== 'OK') throw new Error(`IMAP ${operation} failed: ${response}`);
+      if (match[2] !== 'OK') throw new Error(`IMAP ${operation} failed`);
       return { value: response, consumed: end };
     }, timeoutMs);
   }

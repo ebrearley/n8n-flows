@@ -259,10 +259,164 @@ const dollar = (name) => {
             )
             self.assertIn("IMAP ${operation} failed", code)
             self.assertNotIn("IMAP ${commandText} failed", code)
+            self.assertNotIn("failed: ${response}", code)
             self.assertIn(
                 "await this.command(`LOGIN ${quoteString(username)} ${quoteString(password)}`, 60000, 'LOGIN');",
                 code,
             )
+
+    def test_execute_email_action_suppresses_raw_imap_failure_responses(self):
+        script = r"""
+const fs = require('fs');
+const Module = require('module');
+const { EventEmitter } = require('events');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Execute email action').parameters.jsCode;
+
+const FAKE_USER = 'synthetic-user@example.test';
+const FAKE_PASSWORD = 'synthetic-password-value';
+const FAKE_MESSAGE_ID = '<synthetic-message-id-secret@example.test>';
+const FAKE_DESTINATION = 'Synthetic Sensitive Destination';
+
+function taggedResponse(tag, command, scenario) {
+  if (command.startsWith('LOGIN ')) {
+    if (scenario === 'login') {
+      return `${tag} NO ${command} failed for ${FAKE_USER} ${FAKE_PASSWORD}\r\n`;
+    }
+    return `${tag} OK LOGIN completed\r\n`;
+  }
+  if (command.startsWith('LIST ')) {
+    return `* LIST () "/" "${FAKE_DESTINATION}"\r\n${tag} OK LIST completed\r\n`;
+  }
+  if (command.startsWith('SELECT ')) {
+    return `${tag} OK SELECT completed\r\n`;
+  }
+  if (command.startsWith('UID SEARCH ')) {
+    if (scenario === 'search') {
+      return `${tag} NO ${command} failed for ${FAKE_MESSAGE_ID}\r\n`;
+    }
+    return `* SEARCH 4242\r\n${tag} OK UID SEARCH completed\r\n`;
+  }
+  if (command.startsWith('UID MOVE ')) {
+    if (scenario === 'move') {
+      return `${tag} NO ${command} failed for ${FAKE_DESTINATION}\r\n`;
+    }
+    return `${tag} OK UID MOVE completed\r\n`;
+  }
+  if (command.startsWith('LOGOUT')) {
+    return `${tag} OK LOGOUT completed\r\n`;
+  }
+  return `${tag} BAD ${command} was unexpected\r\n`;
+}
+
+async function runScenario(scenario) {
+  class FakeSocket extends EventEmitter {
+    constructor() {
+      super();
+      process.nextTick(() => {
+        this.emit('connect');
+        this.emit('data', '* OK synthetic IMAP server ready\r\n');
+      });
+    }
+
+    setEncoding() {}
+
+    write(data) {
+      const line = String(data).trim();
+      const space = line.indexOf(' ');
+      const tag = line.slice(0, space);
+      const command = line.slice(space + 1);
+      this.emit('data', taggedResponse(tag, command, scenario));
+    }
+
+    end() {}
+  }
+
+  const fakeNet = {
+    isIP: () => 1,
+    connect: () => new FakeSocket(),
+  };
+  const originalLoad = Module._load;
+  Module._load = function load(request, parent, isMain) {
+    if (request === 'net') return fakeNet;
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  const item = {
+    emailActionsMode: 'live',
+    emailAction: {
+      action: 'archive',
+      destinationMailbox: FAKE_DESTINATION,
+      reason: 'synthetic_failure',
+      approved: true,
+      mode: 'live',
+    },
+    credentialPair: {
+      id: 'synthetic-imap',
+      host: '127.0.0.1',
+      port: 1143,
+      ssl: false,
+      startTls: false,
+      allowUnauthorizedCerts: true,
+      userVar: 'IMAP_USER',
+      passwordVar: 'IMAP_PASSWORD',
+    },
+    sourceMailbox: 'INBOX',
+    uid: scenario === 'search' ? '' : '4242',
+    message_id: FAKE_MESSAGE_ID,
+  };
+  const input = { first: () => ({ json: item }) };
+  const vars = {
+    IMAP_USER: FAKE_USER,
+    IMAP_PASSWORD: FAKE_PASSWORD,
+  };
+
+  try {
+    await new AsyncFunction('$input', '$vars', code)(input, vars);
+    throw new Error(`Scenario ${scenario} unexpectedly succeeded`);
+  } catch (error) {
+    return String(error.message);
+  } finally {
+    Module._load = originalLoad;
+  }
+}
+
+(async () => {
+  const results = {};
+  for (const scenario of ['login', 'search', 'move']) {
+    results[scenario] = await runScenario(scenario);
+  }
+  console.log(JSON.stringify(results));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results = json.loads(completed.stdout)
+
+        self.assertEqual(results["login"], "IMAP LOGIN failed")
+        self.assertEqual(results["search"], "IMAP UID SEARCH failed")
+        self.assertEqual(results["move"], "IMAP UID MOVE failed")
+
+        for message in results.values():
+            self.assertNotIn("synthetic-user@example.test", message)
+            self.assertNotIn("synthetic-password-value", message)
+            self.assertNotIn("<synthetic-message-id-secret@example.test>", message)
+            self.assertNotIn("Synthetic Sensitive Destination", message)
+            self.assertNotIn('LOGIN "synthetic-user@example.test"', message)
+            self.assertNotIn(
+                'UID SEARCH HEADER Message-ID "<synthetic-message-id-secret@example.test>"',
+                message,
+            )
+            self.assertNotIn('UID MOVE 4242 "Synthetic Sensitive Destination"', message)
 
     def test_execute_email_action_dry_run_reports_would_move(self):
         script = r"""
