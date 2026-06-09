@@ -101,7 +101,7 @@ class ImapClient {
     await this.readLine();
 
     if (!this.ssl && this.startTls) {
-      await this.command('STARTTLS');
+      await this.command('STARTTLS', 60000, 'STARTTLS');
       this.socket.removeAllListeners('data');
       this.socket = tls.connect(this.tlsOptions({
         socket: this.socket,
@@ -119,7 +119,7 @@ class ImapClient {
     return `A${String(this.tagCounter).padStart(4, '0')}`;
   }
 
-  command(commandText, timeoutMs = 60000) {
+  command(commandText, timeoutMs = 60000, operation = commandText.split(/\s+/)[0]) {
     const tag = this.nextTag();
     this.socket.write(`${tag} ${commandText}\r\n`, 'binary');
     const pattern = new RegExp(`(^|\\r\\n)${tag} (OK|NO|BAD)[^\\r\\n]*(\\r\\n|$)`);
@@ -128,37 +128,41 @@ class ImapClient {
       if (!match) return null;
       const end = match.index + match[0].length;
       const response = buffer.slice(0, end);
-      if (match[2] !== 'OK') throw new Error(`IMAP ${commandText} failed: ${response}`);
+      if (match[2] !== 'OK') throw new Error(`IMAP ${operation} failed: ${response}`);
       return { value: response, consumed: end };
     }, timeoutMs);
   }
 
   async login(username, password) {
-    await this.command(`LOGIN ${quoteString(username)} ${quoteString(password)}`);
+    await this.command(`LOGIN ${quoteString(username)} ${quoteString(password)}`, 60000, 'LOGIN');
   }
 
   async select(mailbox) {
-    await this.command(`SELECT ${quoteString(mailbox)}`);
+    await this.command(`SELECT ${quoteString(mailbox)}`, 60000, 'SELECT');
   }
 
   async mailboxExists(mailbox) {
-    const response = await this.command(`LIST "" ${quoteString(mailbox)}`);
+    const response = await this.command(`LIST "" ${quoteString(mailbox)}`, 60000, 'LIST');
     return /\* LIST /i.test(response);
   }
 
   async searchMessageId(mailbox, messageId) {
     await this.select(mailbox);
-    const response = await this.command(`UID SEARCH HEADER Message-ID ${quoteString(messageId)}`);
+    const response = await this.command(
+      `UID SEARCH HEADER Message-ID ${quoteString(messageId)}`,
+      60000,
+      'UID SEARCH',
+    );
     return parseSearchResponse(response);
   }
 
   async moveUid(uid, destination) {
-    await this.command(`UID MOVE ${uid} ${quoteString(destination)}`, 120000);
+    await this.command(`UID MOVE ${uid} ${quoteString(destination)}`, 120000, 'UID MOVE');
   }
 
   async logout() {
     try {
-      await this.command('LOGOUT', 10000);
+      await this.command('LOGOUT', 10000, 'LOGOUT');
     } finally {
       this.socket?.end();
     }

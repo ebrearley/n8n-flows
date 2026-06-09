@@ -248,6 +248,22 @@ const dollar = (name) => {
             self.assertNotIn("STORE +FLAGS", code)
             self.assertNotIn("CREATE", code)
 
+    def test_execute_email_action_redacts_raw_imap_commands_from_errors(self):
+        nodes = self.nodes_by_name()
+
+        for name in ("Execute email action", "Execute email action (trigger)"):
+            code = nodes[name]["parameters"]["jsCode"]
+            self.assertIn(
+                "command(commandText, timeoutMs = 60000, operation = commandText.split(/\\s+/)[0])",
+                code,
+            )
+            self.assertIn("IMAP ${operation} failed", code)
+            self.assertNotIn("IMAP ${commandText} failed", code)
+            self.assertIn(
+                "await this.command(`LOGIN ${quoteString(username)} ${quoteString(password)}`, 60000, 'LOGIN');",
+                code,
+            )
+
     def test_execute_email_action_dry_run_reports_would_move(self):
         script = r"""
 const fs = require('fs');
