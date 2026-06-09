@@ -46,7 +46,7 @@ const labels = Array.isArray(parsed?.labels) ? parsed.labels : [];
 const status = labels.length === 0 || labels.some((item) => item?.label === 'uncertain')
   ? 'uncertain'
   : 'success';
-const model = 'odytrice/gemma4-26b:4090';
+const model = 'igorls/gemma4-e4b-classifier:Q4_K_M';
 const item = {
   ...source,
   output: $json.output ?? $json,
