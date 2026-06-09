@@ -108,7 +108,7 @@ const input = { first: () => ({ json: item }) };
         )
         return json.loads(completed.stdout)
 
-    def run_prepare_then_plan_email_actions(self, classifier_output):
+    def run_prepare_then_plan_email_actions(self, classifier_output, source_overrides=None):
         script = r"""
 const fs = require('fs');
 const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
@@ -116,6 +116,7 @@ const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
 const prepareCode = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
 const planCode = workflow.nodes.find((node) => node.name === 'Plan email actions').parameters.jsCode;
 const classifierOutput = JSON.parse(process.argv[1]);
+const sourceOverrides = JSON.parse(process.argv[2]);
 const source = {
   uid: 'synthetic-uid',
   sourceFlow: 'bulk',
@@ -127,6 +128,7 @@ const source = {
   actionArchiveMailbox: 'Archive',
   actionSpamMailbox: 'Spam',
   actionTrashMailbox: 'Trash',
+  ...sourceOverrides,
 };
 const aiOutput = { output: JSON.stringify(classifierOutput) };
 const dollar = (name) => {
@@ -144,7 +146,13 @@ const dollar = (name) => {
 });
 """
         completed = subprocess.run(
-            ["node", "-e", script, json.dumps(classifier_output)],
+            [
+                "node",
+                "-e",
+                script,
+                json.dumps(classifier_output),
+                json.dumps(source_overrides or {}),
+            ],
             cwd=ROOT,
             check=True,
             capture_output=True,
@@ -400,6 +408,30 @@ const dollar = (name) => {
                 })
 
                 self.assertIsNone(result["prepared"]["actionHints"]["has_errors"])
+                self.assertEqual(result["planned"]["emailAction"]["action"], "none")
+                self.assertIs(result["planned"]["emailAction"]["approved"], False)
+
+    def test_prepare_then_plan_keeps_two_factor_actions_without_accepted_labels(self):
+        cases = {
+            "uncertain": [{"label": "uncertain", "confidence": 0.5}],
+            "low_confidence_allowed": [{"label": "Important", "confidence": 0.5}],
+            "unknown_label": [{"label": "Totally Unknown", "confidence": 0.99}],
+        }
+
+        for name, labels in cases.items():
+            with self.subTest(name=name):
+                result = self.run_prepare_then_plan_email_actions(
+                    {
+                        "labels": labels,
+                        "action_hints": {
+                            "two_factor_code": True,
+                        },
+                        "reason": "Synthetic ambiguous two factor classification",
+                    },
+                    {"date": "Mon, 08 Jun 2026 10:00:00 +1000"},
+                )
+
+                self.assertEqual(result["prepared"]["labels"], [])
                 self.assertEqual(result["planned"]["emailAction"]["action"], "none")
                 self.assertIs(result["planned"]["emailAction"]["approved"], False)
 

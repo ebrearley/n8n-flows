@@ -52,6 +52,8 @@ function approved(action, destinationMailbox, reason, mode) {
 const mode = actionMode(item.emailActionsMode ?? item.email_actions_mode);
 const labelNames = labelsOf(item);
 const actionHints = hintsOf(item);
+const classificationLabels = Array.isArray(item.classification?.labels) ? item.classification.labels : [];
+const hasUncertainClassification = classificationLabels.some((label) => label?.label === 'uncertain');
 const now = parseDate(item.actionNow || item.workflowNow || item.now) || new Date();
 const archiveMailbox = stringValue(item.actionArchiveMailbox, 'Archive');
 const spamMailbox = stringValue(item.actionSpamMailbox, 'Spam');
@@ -61,6 +63,10 @@ let emailAction = noAction('no_rule_matched', mode);
 
 if (mode === 'disabled') {
   emailAction = noAction('actions_disabled', mode);
+} else if (hasUncertainClassification) {
+  emailAction = noAction('uncertain_classification', mode);
+} else if (labelNames.size === 0) {
+  emailAction = noAction('no_accepted_labels', mode);
 } else if (labelNames.has('Spam like')) {
   emailAction = approved('move_to_spam', spamMailbox, 'spam_like', mode);
 } else if (actionHints.two_factor_code === true) {
