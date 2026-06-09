@@ -65,6 +65,7 @@ Include `action_hints` in every response. Use conservative values. If evidence i
 }
 ```
 
+- `action_hints`: include this object in every response.
 - `two_factor_code`: true only for one-time passcodes, MFA, login verification, or security-code emails.
 - `event_notice`: true only for event reminders, calendar notifications, or invitations.
 - `event_time`: ISO 8601 date-time with timezone for the event, or null when no clear event time exists.

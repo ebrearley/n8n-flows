@@ -1,5 +1,7 @@
+import importlib.util
 import json
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -60,6 +62,15 @@ class WorkflowJsonTests(unittest.TestCase):
             for assignment in node["parameters"]["assignments"]["assignments"]
         }
         return assignments["systemPrompt"]["value"]
+
+    def load_workflow_updater(self):
+        updater_path = ROOT / "tools" / "apply_email_action_workflow_updates.py"
+        spec = importlib.util.spec_from_file_location(
+            "apply_email_action_workflow_updates", updater_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def test_imap_action_nodes_are_javascript_code_nodes(self):
         nodes = self.nodes_by_name()
@@ -889,12 +900,21 @@ const input = { all: () => inputs };
     def test_system_prompt_requests_sanitized_action_hints(self):
         assignments = self.build_prompt_assignments()
         value = assignments["systemPrompt"]["value"]
+        schema_section = value.split("## Schema", 1)[1].split("## Rules", 1)[0]
 
-        self.assertIn("action_hints", value)
-        self.assertIn("two_factor_code", value)
-        self.assertIn("event_time", value)
-        self.assertIn("backup_status", value)
-        self.assertIn("has_errors", value)
+        self.assertEqual(value.count("<!-- action-hints:start -->"), 1)
+        self.assertEqual(value.count("<!-- action-hints:end -->"), 1)
+        self.assertIn('"action_hints": {', schema_section)
+        self.assertIn('"two_factor_code": false', schema_section)
+        self.assertIn('"event_notice": false', schema_section)
+        self.assertIn('"event_time": null', schema_section)
+        self.assertIn('"backup_job": false', schema_section)
+        self.assertIn('"backup_status": "unknown"', schema_section)
+        self.assertIn('"has_errors": false', schema_section)
+        self.assertIn("- `action_hints`:", schema_section)
+        self.assertNotIn('"reason": string\n}', schema_section)
+        self.assertNotIn("Also include an `action_hints` object", schema_section)
+        self.assertNotIn("must match output exactly", value)
 
     def test_prepare_targets_accepts_schedule_and_spam_like_labels(self):
         script = r"""
@@ -1148,6 +1168,95 @@ const dollar = (name) => {
         )
         self.assertNotIn("ignored_extra_field", result["actionHints"])
         self.assertEqual(result["classification"]["action_hints"], result["actionHints"])
+
+    def test_prepare_targets_drops_invalid_action_hint_event_time(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '102',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [{ label: 'Schedule', confidence: 0.9 }],
+    action_hints: {
+      event_notice: true,
+      event_time: 'Wedding at Brunswick Town Hall, ask Alex for the private address',
+    },
+    reason: 'Invitation with a natural-language event description'
+  })
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertIsNone(result["actionHints"]["event_time"])
+        self.assertIsNone(result["classification"]["action_hints"]["event_time"])
+
+    def test_action_hint_prompt_updater_repairs_and_is_idempotent(self):
+        updater = self.load_workflow_updater()
+        workflow = self.load_workflow()
+
+        assignments = {
+            assignment["name"]: assignment
+            for assignment in next(
+                node
+                for node in workflow["nodes"]
+                if node["name"] == "Build classification prompt"
+            )["parameters"]["assignments"]["assignments"]
+        }
+        assignments["systemPrompt"]["value"] = assignments["systemPrompt"]["value"].replace(
+            updater.ACTION_HINTS_SECTION,
+            '\n\n## Optional action hints\nAlso include an `action_hints` object without the canonical schema.\n',
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workflow_path = Path(tmpdir) / "workflow.json"
+            workflow_path.write_text(json.dumps(workflow, indent=2) + "\n", encoding="utf-8")
+
+            updater.update_workflow(workflow_path)
+            first_update = workflow_path.read_text(encoding="utf-8")
+            repaired = json.loads(first_update)
+            repaired_assignments = {
+                assignment["name"]: assignment
+                for assignment in next(
+                    node
+                    for node in repaired["nodes"]
+                    if node["name"] == "Build classification prompt"
+                )["parameters"]["assignments"]["assignments"]
+            }
+            repaired_prompt = repaired_assignments["systemPrompt"]["value"]
+
+            self.assertEqual(repaired_prompt.count(updater.ACTION_HINTS_START), 1)
+            self.assertEqual(repaired_prompt.count(updater.ACTION_HINTS_END), 1)
+            self.assertNotIn("without the canonical schema", repaired_prompt)
+
+            updater.update_workflow(workflow_path)
+            self.assertEqual(workflow_path.read_text(encoding="utf-8"), first_update)
 
     def test_ollama_model_uses_installed_name(self):
         nodes = self.nodes_by_name()
