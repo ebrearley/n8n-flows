@@ -29,6 +29,20 @@ class WorkflowJsonTests(unittest.TestCase):
             for assignment in node["parameters"]["assignments"]["assignments"]
         }
 
+    def load_workflow_file(self, filename):
+        return json.loads((ROOT / filename).read_text(encoding="utf-8"))
+
+    def build_prompt_value_from_workflow(self, workflow):
+        node = next(
+            node for node in workflow["nodes"]
+            if node["name"] == "Build classification prompt"
+        )
+        assignments = {
+            assignment["name"]: assignment
+            for assignment in node["parameters"]["assignments"]["assignments"]
+        }
+        return assignments["systemPrompt"]["value"]
+
     def test_imap_action_nodes_are_javascript_code_nodes(self):
         nodes = self.nodes_by_name()
 
@@ -205,6 +219,103 @@ const json = {
         self.assertEqual(result["uid"], "42")
         self.assertEqual(result["message_id"], "<trigger-message@example.test>")
         self.assertIn("Meet at 4pm", result["email_body"])
+
+    def test_system_prompt_includes_approved_label_taxonomy(self):
+        expected_labels = [
+            "Account notification",
+            "Statement",
+            "Account (security)",
+            "Newsletter",
+            "Personal",
+        ]
+        expected_phrases = [
+            "routine account",
+            "service statements",
+            "MFA",
+            "digest-style",
+            "Direct personal correspondence",
+        ]
+
+        for filename in ("workflow.json", "workflow-imap-trigger.json"):
+            with self.subTest(filename=filename):
+                value = self.build_prompt_value_from_workflow(
+                    self.load_workflow_file(filename),
+                )
+                for label in expected_labels:
+                    self.assertIn(f"`{label}`", value)
+                for phrase in expected_phrases:
+                    self.assertIn(phrase, value)
+                self.assertNotIn("`Account/Security`", value)
+
+    def test_prepare_targets_accepts_approved_label_taxonomy(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '3542',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [
+      { label: 'Account notification', confidence: 0.91 },
+      { label: 'Statement', confidence: 0.90 },
+      { label: 'Account (security)', confidence: 0.89 },
+      { label: 'Newsletter', confidence: 0.88 },
+      { label: 'Personal', confidence: 0.87 },
+    ],
+    reason: 'Multiple approved taxonomy labels are present',
+  }),
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(
+            result["labels"],
+            [
+                {"label": "Account notification", "confidence": 0.91},
+                {"label": "Statement", "confidence": 0.90},
+                {"label": "Account (security)", "confidence": 0.89},
+                {"label": "Newsletter", "confidence": 0.88},
+                {"label": "Personal", "confidence": 0.87},
+            ],
+        )
+        self.assertEqual(
+            result["targetMailboxes"],
+            [
+                "Labels/Account notification",
+                "Labels/Statement",
+                "Labels/Account (security)",
+                "Labels/Newsletter",
+                "Labels/Personal",
+                "Labels/Classified",
+            ],
+        )
+        self.assertNotIn("Labels/Account/Security", result["targetMailboxes"])
 
     def test_fetch_checks_classified_state_with_headers_before_fetching_body(self):
         code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]

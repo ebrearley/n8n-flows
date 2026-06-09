@@ -184,6 +184,11 @@ Default labels:
 - `Hustle`
 - `Schedule`
 - `Spam like`
+- `Account notification`
+- `Statement`
+- `Account (security)`
+- `Newsletter`
+- `Personal`
 
 ## Local Tests
 

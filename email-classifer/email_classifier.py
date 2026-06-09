@@ -42,6 +42,18 @@ DEFAULT_SYSTEM_PROMPT = """You are an email triage assistant. Given one email, a
 - `Hustle` — correspondence with people or businesses engaging me for professional work
 - `Schedule` — calendar invitations and calendar notifications, or anything with a time and place to be, like a wedding, meeting with friends, or work meeting
 - `Spam like` — emails that look like spam or junk mail
+- `Account notification` — routine account, service, policy, profile, membership, subscription, or platform notices that do not primarily concern security or billing
+- `Statement` — periodic account, bank, provider, or service statements summarizing balances, activity, usage, holdings, or charges
+- `Account (security)` — account access and security messages, including logins, MFA, password changes, identity checks, recovery codes, suspicious activity, sign-in warnings, or verification requests
+- `Newsletter` — recurring editorial, community, creator, publication, product-update, or digest-style emails from known or subscribed sources
+- `Personal` — Direct personal correspondence from friends, family, acquaintances, or personal contacts about non-business, non-automated matters
+
+## Label boundaries
+- `Account notification`: use for routine account, service, policy, profile, membership, subscription, or platform notices. Do not use for security, billing, infrastructure, or transaction mail.
+- `Statement`: use for periodic account, bank, provider, or service statements. Do not use for invoices, bills, receipts, purchases, or payment events.
+- `Account (security)`: use for login, MFA, password, recovery, identity verification, suspicious activity, sign-in warning, and account access security messages. Do not use slash-separated account security labels.
+- `Newsletter`: use for recurring editorial, community, creator, publication, product-update, or digest-style mail where the main intent is information rather than direct selling.
+- `Personal`: use for direct personal correspondence from real personal contacts. It can overlap with `Schedule` and `Awaiting reply` when those also apply.
 
 ## Schema
 Output **only** JSON matching this shape, nothing else:
@@ -144,6 +156,31 @@ Email: "Calendar invitation: Alex and Priya's wedding, Saturday 4pm at Brunswick
 Email: "Congratulations winner! Click here to claim your prize before it expires."
 ```json
 {"labels": [{"label": "Spam like", "confidence": 0.90}], "reason": "Message resembles junk mail with a suspicious prize claim"}
+```
+
+Email: "Your account profile was updated successfully."
+```json
+{"labels": [{"label": "Account notification", "confidence": 0.90}], "reason": "Routine account status notice"}
+```
+
+Email: "Your April bank statement is now available."
+```json
+{"labels": [{"label": "Statement", "confidence": 0.94}], "reason": "Periodic account statement notice"}
+```
+
+Email: "New sign-in to your account from Chrome on Linux. If this was not you, reset your password."
+```json
+{"labels": [{"label": "Account (security)", "confidence": 0.95}], "reason": "Account access security alert"}
+```
+
+Email: "Weekly digest: five new essays and community updates."
+```json
+{"labels": [{"label": "Newsletter", "confidence": 0.90}], "reason": "Recurring digest-style newsletter"}
+```
+
+Email: "Hey, dinner at my place this Friday?"
+```json
+{"labels": [{"label": "Personal", "confidence": 0.88}, {"label": "Schedule", "confidence": 0.78}, {"label": "Awaiting reply", "confidence": 0.76}], "reason": "Personal invitation that needs a response and includes timing"}
 ```"""
 
 DEFAULT_USER_PROMPT_TEMPLATE = """From: {{ $json.sender_email }}
@@ -168,6 +205,11 @@ DEFAULT_LABELS = [
     "Hustle",
     "Schedule",
     "Spam like",
+    "Account notification",
+    "Statement",
+    "Account (security)",
+    "Newsletter",
+    "Personal",
     "uncertain",
 ]
 
