@@ -48,6 +48,31 @@ ACTION_ASSIGNMENTS = [
     },
 ]
 
+ACTION_HINTS_START = "<!-- action-hints:start -->"
+ACTION_HINTS_END = "<!-- action-hints:end -->"
+ACTION_HINTS_SECTION = ACTION_HINTS_START + """
+## Action hints
+Include `action_hints` in every response. Use conservative values. If evidence is missing or ambiguous, use false, null, or "unknown".
+
+```json
+"action_hints": {
+  "two_factor_code": false,
+  "event_notice": false,
+  "event_time": null,
+  "backup_job": false,
+  "backup_status": "unknown",
+  "has_errors": false
+}
+```
+
+- `two_factor_code`: true only for one-time passcodes, MFA, login verification, or security-code emails.
+- `event_notice`: true only for event reminders, calendar notifications, or invitations.
+- `event_time`: ISO 8601 date-time with timezone for the event, or null when no clear event time exists.
+- `backup_job`: true only for backup job notifications.
+- `backup_status`: "success", "failure", "warning", or "unknown".
+- `has_errors`: true when the email mentions errors, failures, warnings, partial completion, or missed backup jobs.
+""" + ACTION_HINTS_END
+
 
 def read_code(name: str) -> str:
     return (ROOT / "code-nodes" / name).read_text(encoding="utf-8")
@@ -90,6 +115,66 @@ def ensure_assignment(workflow: dict, assignment: dict) -> None:
             existing.update(assignment)
             return
     assignments.append(dict(assignment))
+
+
+def remove_marked_action_hints_section(value: str) -> str:
+    while ACTION_HINTS_START in value or ACTION_HINTS_END in value:
+        start = value.find(ACTION_HINTS_START)
+        end = value.find(ACTION_HINTS_END)
+        if start == -1 or end == -1 or end < start:
+            raise ValueError("Malformed action hints section markers")
+        end += len(ACTION_HINTS_END)
+        value = value[:start].rstrip() + "\n" + value[end:].lstrip()
+    return value
+
+
+def ensure_action_hints_schema(value: str) -> str:
+    if '"action_hints"' in value:
+        return value
+    category_schema_tail = '  "reason": string\n}\n```'
+    if category_schema_tail not in value:
+        raise ValueError("System prompt is missing expected category schema")
+    action_hints_schema = """  "reason": string,
+  "action_hints": {
+    "two_factor_code": boolean,
+    "event_notice": boolean,
+    "event_time": string | null,
+    "backup_job": boolean,
+    "backup_status": "success" | "failure" | "warning" | "unknown",
+    "has_errors": boolean
+  }
+}
+```"""
+    return value.replace(category_schema_tail, action_hints_schema, 1)
+
+
+def update_system_prompt(workflow: dict) -> None:
+    build_prompt = node_by_name(workflow)["Build classification prompt"]
+    assignments = build_prompt["parameters"]["assignments"]["assignments"]
+    for assignment in assignments:
+        if assignment["name"] != "systemPrompt":
+            continue
+        value = remove_marked_action_hints_section(assignment["value"])
+        rules_anchor = "\n## Rules\n"
+        if rules_anchor not in value:
+            raise ValueError("System prompt is missing ## Rules anchor")
+
+        legacy_optional_anchor = "\n## Optional action hints\n"
+        if legacy_optional_anchor in value:
+            prefix, legacy_and_rest = value.split(legacy_optional_anchor, 1)
+            _legacy_optional, suffix = legacy_and_rest.split(rules_anchor, 1)
+            value = f"{prefix.rstrip()}{rules_anchor}{suffix.lstrip()}"
+
+        value = ensure_action_hints_schema(value)
+        prefix, suffix = value.split(rules_anchor, 1)
+        value = "\n\n".join([prefix.rstrip(), ACTION_HINTS_SECTION, f"## Rules\n{suffix.lstrip()}"])
+
+        if value.count(ACTION_HINTS_START) != 1 or value.count(ACTION_HINTS_END) != 1:
+            raise ValueError("System prompt must contain exactly one action hints section")
+
+        assignment["value"] = value
+        return
+    raise ValueError("Build classification prompt is missing systemPrompt assignment")
 
 
 def set_position(workflow: dict, name: str) -> None:
@@ -138,6 +223,7 @@ def update_workflow(path: Path) -> None:
     )
     for assignment in ACTION_ASSIGNMENTS:
         ensure_assignment(workflow, assignment)
+    update_system_prompt(workflow)
     for name in NODE_POSITIONS:
         set_position(workflow, name)
     update_connections(workflow)

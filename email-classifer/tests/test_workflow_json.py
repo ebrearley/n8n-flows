@@ -886,6 +886,16 @@ const input = { all: () => inputs };
         self.assertIn("category", value)
         self.assertIn("junk-like", value)
 
+    def test_system_prompt_requests_sanitized_action_hints(self):
+        assignments = self.build_prompt_assignments()
+        value = assignments["systemPrompt"]["value"]
+
+        self.assertIn("action_hints", value)
+        self.assertIn("two_factor_code", value)
+        self.assertIn("event_time", value)
+        self.assertIn("backup_status", value)
+        self.assertIn("has_errors", value)
+
     def test_prepare_targets_accepts_schedule_and_spam_like_labels(self):
         script = r"""
 const fs = require('fs');
@@ -1074,6 +1084,70 @@ const dollar = () => ({
             self.assertEqual(result["labelMailboxes"], [])
             self.assertEqual(result["targetMailboxes"], ["Labels/Classified"])
             self.assertEqual(result["category"]["name"], "uncertain")
+
+    def test_prepare_targets_preserves_sanitized_action_hints(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '101',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [{ label: 'Infrastructure', confidence: 0.91 }],
+    action_hints: {
+      two_factor_code: false,
+      event_notice: true,
+      event_time: '2026-06-09T08:00:00+10:00',
+      backup_job: true,
+      backup_status: 'success',
+      has_errors: false,
+      ignored_extra_field: 'not copied'
+    },
+    reason: 'Successful backup notification for an infrastructure system'
+  })
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(
+            result["actionHints"],
+            {
+                "two_factor_code": False,
+                "event_notice": True,
+                "event_time": "2026-06-09T08:00:00+10:00",
+                "backup_job": True,
+                "backup_status": "success",
+                "has_errors": False,
+            },
+        )
+        self.assertNotIn("ignored_extra_field", result["actionHints"])
+        self.assertEqual(result["classification"]["action_hints"], result["actionHints"])
 
     def test_ollama_model_uses_installed_name(self):
         nodes = self.nodes_by_name()
