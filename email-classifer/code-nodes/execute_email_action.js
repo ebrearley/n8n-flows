@@ -253,6 +253,72 @@ function normalizeUid(value) {
   return uid;
 }
 
+function isUnsafeOutputKey(key) {
+  const normalized = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (
+    normalized.includes('password')
+    || normalized.includes('secret')
+    || normalized.includes('token')
+    || normalized.includes('apikey')
+    || normalized.includes('authorization')
+    || normalized.includes('credential')
+    || normalized.includes('cookie')
+    || normalized.includes('privatekey')
+  ) {
+    return true;
+  }
+  return [
+    'body',
+    'emailbody',
+    'bodypreview',
+    'rawbody',
+    'textplain',
+    'texthtml',
+    'userprompt',
+    'systemprompt',
+    'prompt',
+    'rawimapcommand',
+    'rawcommand',
+    'commandtext',
+    'rawserverresponse',
+    'rawresponse',
+    'serverresponse',
+    'headers',
+    'rawheaders',
+  ].includes(normalized);
+}
+
+function isSecretLookingValue(value) {
+  if (typeof value !== 'string') return false;
+  return /(?:^sk-[a-z0-9_-]{8,}|password|secret|bearer\s+|api[_-]?key|-----BEGIN [A-Z ]*PRIVATE KEY-----)/i.test(value);
+}
+
+function sanitizeOutputValue(value) {
+  if (value === null || value === undefined) return value;
+  if (isSecretLookingValue(value)) return undefined;
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => sanitizeOutputValue(entry))
+      .filter((entry) => entry !== undefined);
+  }
+  if (typeof value !== 'object') return value;
+
+  const sanitized = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (isUnsafeOutputKey(key)) continue;
+    const sanitizedEntry = sanitizeOutputValue(entry);
+    if (sanitizedEntry !== undefined) sanitized[key] = sanitizedEntry;
+  }
+  return sanitized;
+}
+
+function outputJson(item, fields) {
+  return {
+    ...sanitizeOutputValue(item),
+    ...fields,
+  };
+}
+
 const item = $input.first()?.json ?? {};
 const action = item.emailAction && typeof item.emailAction === 'object'
   ? item.emailAction
@@ -263,21 +329,19 @@ const destinationMailbox = String(action.destinationMailbox || '').trim();
 
 if (action.approved !== true || !destinationMailbox || actionName === 'none' || mode === 'disabled') {
   return [{
-    json: {
-      ...item,
+    json: outputJson(item, {
       email_action_status: 'skipped_no_action',
       email_action_destination: '',
-    },
+    }),
   }];
 }
 
 if (mode === 'dry_run') {
   return [{
-    json: {
-      ...item,
+    json: outputJson(item, {
       email_action_status: 'would_move',
       email_action_destination: destinationMailbox,
-    },
+    }),
   }];
 }
 
@@ -305,12 +369,11 @@ try {
 
   if (!(await client.mailboxExists(destinationMailbox))) {
     return [{
-      json: {
-        ...item,
+      json: outputJson(item, {
         email_action_status: 'skipped_missing_mailbox',
         email_action_destination: destinationMailbox,
         email_action_error: 'destination_mailbox_missing',
-      },
+      }),
     }];
   }
 
@@ -330,10 +393,9 @@ try {
 }
 
 return [{
-  json: {
-    ...item,
+  json: outputJson(item, {
     email_action_status: 'moved',
     email_action_destination: destinationMailbox,
     source_action: actionName,
-  },
+  }),
 }];

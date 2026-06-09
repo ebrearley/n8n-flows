@@ -456,6 +456,105 @@ const input = { first: () => ({ json: item }) };
         self.assertEqual(result["email_action_status"], "would_move")
         self.assertEqual(result["email_action_destination"], "Archive")
 
+    def test_execute_email_action_omits_unsafe_fields_from_local_outcomes(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Execute email action').parameters.jsCode;
+
+async function run(item) {
+  const result = await new AsyncFunction('$input', code)({ first: () => ({ json: item }) });
+  return result[0].json;
+}
+
+const baseItem = {
+  uid: '4242',
+  message_id: '<synthetic-message@example.test>',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  sourceMailbox: 'INBOX',
+  email_body: 'private synthetic email body should not leave executor',
+  userPrompt: 'prompt containing private synthetic email body',
+  systemPrompt: 'full classifier system prompt',
+  api_key: 'sk-synthetic-secret',
+  imapPassword: 'synthetic-imap-password',
+  rawImapCommand: 'UID MOVE 4242 "Sensitive Destination"',
+  rawServerResponse: 'A0004 NO UID MOVE 4242 "Sensitive Destination" failed',
+  credentialPair: {
+    id: 'imap-1',
+    userVar: 'IMAP_USER',
+    passwordVar: 'IMAP_PASSWORD',
+  },
+};
+
+(async () => {
+  const dryRun = await run({
+    ...baseItem,
+    emailActionsMode: 'dry_run',
+    emailAction: {
+      action: 'archive',
+      destinationMailbox: 'Archive',
+      reason: 'past_event',
+      approved: true,
+      mode: 'dry_run',
+    },
+  });
+  const skipped = await run({
+    ...baseItem,
+    emailActionsMode: 'live',
+    emailAction: {
+      action: 'none',
+      destinationMailbox: '',
+      reason: 'no_action',
+      approved: false,
+      mode: 'live',
+    },
+  });
+  console.log(JSON.stringify({ dryRun, skipped }));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results = json.loads(completed.stdout)
+
+        for name, result in results.items():
+            with self.subTest(outcome=name):
+                serialized = json.dumps(result)
+                self.assertEqual(result["uid"], "4242")
+                self.assertEqual(result["message_id"], "<synthetic-message@example.test>")
+                self.assertEqual(result["sourceFlow"], "bulk")
+                self.assertEqual(result["sourceMailbox"], "INBOX")
+                self.assertIn("emailAction", result)
+                self.assertNotIn("email_body", result)
+                self.assertNotIn("userPrompt", result)
+                self.assertNotIn("systemPrompt", result)
+                self.assertNotIn("api_key", result)
+                self.assertNotIn("imapPassword", result)
+                self.assertNotIn("rawImapCommand", result)
+                self.assertNotIn("rawServerResponse", result)
+                self.assertNotIn("credentialPair", result)
+                self.assertNotIn("private synthetic email body", serialized)
+                self.assertNotIn("full classifier system prompt", serialized)
+                self.assertNotIn("sk-synthetic-secret", serialized)
+                self.assertNotIn("synthetic-imap-password", serialized)
+                self.assertNotIn('UID MOVE 4242 "Sensitive Destination"', serialized)
+                self.assertNotIn("A0004 NO UID MOVE", serialized)
+                self.assertNotIn("IMAP_PASSWORD", serialized)
+
+        self.assertEqual(results["dryRun"]["email_action_status"], "would_move")
+        self.assertEqual(results["dryRun"]["email_action_destination"], "Archive")
+        self.assertEqual(results["skipped"]["email_action_status"], "skipped_no_action")
+        self.assertEqual(results["skipped"]["email_action_destination"], "")
+
     def test_plan_email_actions_moves_spam_like_to_spam(self):
         result = self.run_plan_email_actions({
             "emailActionsMode": "live",
