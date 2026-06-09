@@ -995,7 +995,7 @@ const json = {
         self.assertIn("classification_attempts", text)
         self.assertIn("label_actions", text)
         self.assertIn("estimated_prompt_tokens", text)
-        self.assertIn("igorls/gemma4-e4b-classifier:Q4_K_M", text)
+        self.assertIn("gemma4:e4b", text)
 
     def test_telemetry_inserts_classification_and_label_actions_by_ids(self):
         nodes = self.nodes_by_name()
@@ -1536,7 +1536,7 @@ const dollar = (name) => {
 
         self.assertEqual(
             nodes["Ollama Chat Model"]["parameters"]["model"],
-            "igorls/gemma4-e4b-classifier:Q4_K_M",
+            "gemma4:e4b",
         )
 
     def test_workflow_stops_on_model_errors_during_setup(self):
