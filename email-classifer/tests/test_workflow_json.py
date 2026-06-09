@@ -11,6 +11,24 @@ class WorkflowJsonTests(unittest.TestCase):
     def load_workflow(self):
         return json.loads((ROOT / "workflow.json").read_text(encoding="utf-8"))
 
+    def load_workflow_path(self, name):
+        return json.loads((ROOT / name).read_text(encoding="utf-8"))
+
+    def all_workflows(self):
+        return {
+            "workflow.json": self.load_workflow_path("workflow.json"),
+            "workflow-imap-trigger.json": self.load_workflow_path("workflow-imap-trigger.json"),
+        }
+
+    def nodes_by_name_for(self, workflow):
+        return {node["name"]: node for node in workflow["nodes"]}
+
+    def connection_targets(self, workflow, node_name, output_index=0):
+        return [
+            connection["node"]
+            for connection in workflow["connections"][node_name]["main"][output_index]
+        ]
+
     def nodes_by_name(self):
         workflow = self.load_workflow()
         return {node["name"]: node for node in workflow["nodes"]}
@@ -79,6 +97,52 @@ class WorkflowJsonTests(unittest.TestCase):
             "Configure Proton IMAP batch",
         )
 
+    def test_workflow_exports_have_same_nodes_and_connections(self):
+        workflows = self.all_workflows()
+        primary = workflows["workflow.json"]
+        compatibility = workflows["workflow-imap-trigger.json"]
+
+        self.assertEqual(compatibility["nodes"], primary["nodes"])
+        self.assertEqual(compatibility["connections"], primary["connections"])
+
+    def test_start_paths_route_through_clean_and_embedding_nodes(self):
+        for workflow_name, workflow in self.all_workflows().items():
+            nodes = self.nodes_by_name_for(workflow)
+
+            self.assertNotIn("Manual Trigger", nodes, workflow_name)
+            self.assertIn("Clean and truncate email", nodes, workflow_name)
+            self.assertIn("Generate email embedding", nodes, workflow_name)
+            self.assertEqual(
+                nodes["Clean and truncate email"]["type"],
+                "n8n-nodes-base.code",
+                workflow_name,
+            )
+            self.assertEqual(
+                nodes["Generate email embedding"]["type"],
+                "n8n-nodes-base.code",
+                workflow_name,
+            )
+            self.assertEqual(
+                self.connection_targets(workflow, "Loop Over Emails", 1),
+                ["Clean and truncate email"],
+                workflow_name,
+            )
+            self.assertEqual(
+                self.connection_targets(workflow, "Skip classified trigger email"),
+                ["Clean and truncate email"],
+                workflow_name,
+            )
+            self.assertEqual(
+                self.connection_targets(workflow, "Clean and truncate email"),
+                ["Generate email embedding"],
+                workflow_name,
+            )
+            self.assertEqual(
+                self.connection_targets(workflow, "Generate email embedding"),
+                ["Build classification prompt"],
+                workflow_name,
+            )
+
     def test_email_trigger_disables_last_message_tracking(self):
         node = self.nodes_by_name()["Email Trigger (IMAP)"]
 
@@ -96,7 +160,7 @@ class WorkflowJsonTests(unittest.TestCase):
         )
         self.assertEqual(
             workflow["connections"]["Skip classified trigger email"]["main"][0][0]["node"],
-            "Build classification prompt",
+            "Clean and truncate email",
         )
 
         guard_code = nodes["Skip classified trigger email"]["parameters"]["jsCode"]
@@ -113,6 +177,8 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertEqual(assignments["rawFetchByteLimit"]["value"], 65536)
         self.assertEqual(assignments["fetchWatchdogMs"]["value"], 120000)
         self.assertEqual(assignments["uidSearchWindow"]["value"], 500)
+        self.assertEqual(assignments["embeddingBaseUrl"]["value"], "http://192.168.1.100:11434")
+        self.assertEqual(assignments["embeddingModel"]["value"], "embeddinggemma")
 
         pairs = json.loads(assignments["imapPairsJson"]["value"])
         self.assertIsInstance(pairs, list)
@@ -141,6 +207,125 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertIn("credentialPairId", code)
         self.assertIn("hostVar", code)
         self.assertIn("portVar", code)
+
+    def test_fetch_config_parser_accepts_multiple_source_mailboxes_without_default_extra_folders(self):
+        assignments = self.configure_assignments()
+        configured_pairs = json.loads(assignments["imapPairsJson"]["value"])
+        for pair in configured_pairs:
+            self.assertEqual(pair["sourceMailboxes"], ["INBOX"])
+
+        script = r"""
+const fs = require('fs');
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Get next 50 unclassified emails').parameters.jsCode;
+const helperStart = code.indexOf('function configValue(');
+const helperEnd = code.indexOf('function chunked(');
+if (helperStart < 0 || helperEnd < helperStart) {
+  throw new Error('Could not isolate IMAP config helpers');
+}
+const helpers = new Function(
+  code.slice(helperStart, helperEnd) + '\nreturn { credentialPairsFromConfig };',
+)();
+const defaults = {
+  host: '192.168.3.200',
+  port: 1143,
+  hostVar: 'IMAP_HOST',
+  portVar: 'IMAP_PORT',
+  ssl: false,
+  startTls: true,
+  allowUnauthorizedCerts: true,
+  sourceMailbox: 'INBOX',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+  userVar: 'IMAP_USER',
+  passwordVar: 'IMAP_PASSWORD',
+  rawFetchByteLimit: 65536,
+  dryRun: false,
+};
+const pairs = helpers.credentialPairsFromConfig({
+  imapPairsJson: JSON.stringify([{
+    id: 'imap-synthetic',
+    hostVar: 'IMAP_SYNTHETIC_HOST',
+    portVar: 'IMAP_SYNTHETIC_PORT',
+    userVar: 'IMAP_SYNTHETIC_USER',
+    passwordVar: 'IMAP_SYNTHETIC_PASSWORD',
+    sourceMailboxes: ['INBOX', 'Folders/Receipts', 'Labels/Follow Up'],
+  }]),
+}, defaults);
+console.log(JSON.stringify(pairs));
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        pairs = json.loads(completed.stdout)
+
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(
+            pairs[0]["sourceMailboxes"],
+            ["INBOX", "Folders/Receipts", "Labels/Follow Up"],
+        )
+        self.assertEqual(pairs[0]["id"], "imap-synthetic")
+        self.assertEqual(pairs[0]["userVar"], "IMAP_SYNTHETIC_USER")
+        self.assertEqual(pairs[0]["passwordVar"], "IMAP_SYNTHETIC_PASSWORD")
+
+    def test_fetch_code_caps_batch_at_each_nested_loop_boundary(self):
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        pair_loop = code.index("for (const pair of credentialPairs)")
+        pair_break = code.index("if (emails.length >= defaults.batchLimit) break;", pair_loop)
+        source_loop = code.index("for (const sourceMailbox of pair.sourceMailboxes)", pair_break)
+        source_break = code.index("if (emails.length >= defaults.batchLimit) break;", source_loop)
+        range_loop = code.index("let rangeEnd = uidNext - 1;", source_break)
+        range_limit = code.index(
+            "rangeEnd >= 1 && emails.length < defaults.batchLimit",
+            range_loop,
+        )
+        batch_loop = code.index("for (const uidBatch of chunked(rangeUids, 100))", range_limit)
+        uid_loop = code.index("for (const uid of uidBatch)", batch_loop)
+        push_summary = code.index("emails.push(summary);", uid_loop)
+        uid_break = code.index("if (emails.length >= defaults.batchLimit) break;", push_summary)
+        batch_break = code.index("if (emails.length >= defaults.batchLimit) break;", uid_break + 1)
+
+        self.assertLess(pair_loop, pair_break)
+        self.assertLess(pair_break, source_loop)
+        self.assertLess(source_loop, source_break)
+        self.assertLess(source_break, range_loop)
+        self.assertLess(range_loop, range_limit)
+        self.assertLess(range_limit, batch_loop)
+        self.assertLess(batch_loop, uid_loop)
+        self.assertLess(uid_loop, push_summary)
+        self.assertLess(push_summary, uid_break)
+        self.assertLess(uid_break, batch_break)
+
+    def test_fetch_summary_preserves_pair_and_mailbox_for_label_application(self):
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        self.assertIn("credentialPairId: config.id", code)
+        self.assertIn("credentialPair: publicCredentialPair(config)", code)
+        self.assertIn("sourceMailbox: config.sourceMailbox", code)
+        self.assertIn("const mailboxConfig = { ...pair, sourceMailbox", code)
+
+    def test_apply_code_uses_item_source_mailbox_for_lookup_and_copy(self):
+        nodes = self.nodes_by_name()
+
+        for name in ("Apply Proton labels", "Apply Proton labels (trigger)"):
+            code = nodes[name]["parameters"]["jsCode"]
+            source_decl = "const sourceMailbox = String(configValue(item, 'sourceMailbox', 'INBOX'));"
+            search_call = "client.searchMessageId(sourceMailbox, item.message_id)"
+            select_call = "await client.select(sourceMailbox);"
+            copy_call = "await client.copyUid(uid, mailbox);"
+
+            self.assertIn(source_decl, code, name)
+            self.assertIn(search_call, code, name)
+            self.assertIn(select_call, code, name)
+            self.assertIn(copy_call, code, name)
+            self.assertLess(code.index(source_decl), code.index(search_call), name)
+            self.assertLess(code.index(search_call), code.index(select_call), name)
+            self.assertLess(code.index(select_call), code.index(copy_call), name)
 
     def test_apply_code_uses_email_credential_pair(self):
         code = self.nodes_by_name()["Apply Proton labels"]["parameters"]["jsCode"]
@@ -247,7 +432,7 @@ const json = {
                     self.assertIn(phrase, value)
                 self.assertNotIn("`Account/Security`", value)
 
-    def test_prepare_targets_accepts_approved_label_taxonomy(self):
+    def test_prepare_targets_accepts_approved_category_taxonomy(self):
         script = r"""
 const fs = require('fs');
 const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
@@ -260,26 +445,31 @@ const source = {
   labelPrefix: 'Labels',
   stateLabel: 'Classified',
 };
-const aiOutput = {
-  output: JSON.stringify({
-    labels: [
-      { label: 'Account notification', confidence: 0.91 },
-      { label: 'Statement', confidence: 0.90 },
-      { label: 'Account (security)', confidence: 0.89 },
-      { label: 'Newsletter', confidence: 0.88 },
-      { label: 'Personal', confidence: 0.87 },
-    ],
-    reason: 'Multiple approved taxonomy labels are present',
-  }),
-};
 const dollar = (name) => {
   if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
   return { item: { json: source } };
 };
+const categories = [
+  ['Account notification', 0.91],
+  ['Statement', 0.90],
+  ['Account (security)', 0.89],
+  ['Newsletter', 0.88],
+  ['Personal', 0.87],
+];
 
 (async () => {
-  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
-  console.log(JSON.stringify(result[0].json));
+  const results = [];
+  for (const [name, confidence] of categories) {
+    const aiOutput = {
+      output: JSON.stringify({
+        category: { name, confidence },
+        reason: `${name} is present`,
+      }),
+    };
+    const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+    results.push(result[0].json);
+  }
+  console.log(JSON.stringify(results));
 })().catch((error) => {
   console.error(error);
   process.exit(1);
@@ -292,30 +482,20 @@ const dollar = (name) => {
             capture_output=True,
             text=True,
         )
-        result = json.loads(completed.stdout)
+        results = json.loads(completed.stdout)
 
-        self.assertEqual(
-            result["labels"],
-            [
-                {"label": "Account notification", "confidence": 0.91},
-                {"label": "Statement", "confidence": 0.90},
-                {"label": "Account (security)", "confidence": 0.89},
-                {"label": "Newsletter", "confidence": 0.88},
-                {"label": "Personal", "confidence": 0.87},
-            ],
-        )
-        self.assertEqual(
-            result["targetMailboxes"],
-            [
-                "Labels/Account notification",
-                "Labels/Statement",
-                "Labels/Account (security)",
-                "Labels/Newsletter",
-                "Labels/Personal",
-                "Labels/Classified",
-            ],
-        )
-        self.assertNotIn("Labels/Account/Security", result["targetMailboxes"])
+        expected = [
+            ("Account notification", 0.91),
+            ("Statement", 0.90),
+            ("Account (security)", 0.89),
+            ("Newsletter", 0.88),
+            ("Personal", 0.87),
+        ]
+        for result, (name, confidence) in zip(results, expected):
+            self.assertEqual(result["category"], {"name": name, "confidence": confidence})
+            self.assertEqual(result["labels"], [{"label": name, "confidence": confidence}])
+            self.assertEqual(result["targetMailboxes"], [f"Labels/{name}", "Labels/Classified"])
+            self.assertNotIn("Labels/Account/Security", result["targetMailboxes"])
 
     def test_fetch_checks_classified_state_with_headers_before_fetching_body(self):
         code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
@@ -393,10 +573,265 @@ const dollar = (name) => {
         self.assertNotIn("userPromptTemplate", assignments)
         self.assertTrue(value.startswith("={{"))
         self.assertIn("$json.sender_email", value)
-        self.assertIn("$json.email_body", value)
+        self.assertIn("$json.cleanEmailText", value)
+        self.assertIn("$json.emailEmbedding", value)
+        self.assertNotIn("$json.email_body", value)
         self.assertNotIn("{{ $json.sender_email }}", value)
 
-    def test_system_prompt_includes_schedule_and_spam_like_labels(self):
+    def test_clean_node_normalizes_html_and_truncates_model_text(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Clean and truncate email').parameters.jsCode;
+const input = {
+  all: () => [{
+    json: {
+      sender_email: 'sender@example.test',
+      email_subject: 'Long body',
+      email_body: '<p>Hello&nbsp; <strong>world</strong></p>' + ' x'.repeat(20),
+      cleanEmailTextLimit: 18,
+    },
+  }],
+};
+
+(async () => {
+  const result = await new AsyncFunction('$input', code)(input);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["cleanEmailText"], "Hello world x x x")
+        self.assertGreater(result["cleanEmailTextLength"], len(result["cleanEmailText"]))
+        self.assertTrue(result["cleanEmailTruncated"])
+        self.assertEqual(result["email_body"], result["cleanEmailText"])
+        self.assertLessEqual(len(result["body_preview"]), 500)
+
+    def test_generate_embedding_node_uses_ollama_embed_without_returning_vector(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Generate email embedding').parameters.jsCode;
+globalThis.fetch = async (url, options) => {
+  const payload = JSON.parse(options.body);
+  if (!String(url).endsWith('/api/embed')) throw new Error(`Unexpected URL: ${url}`);
+  if (payload.input !== 'A clean email') throw new Error(`Unexpected input: ${payload.input}`);
+  return {
+    ok: true,
+    status: 200,
+    text: async () => 'ok',
+    json: async () => ({
+      model: payload.model,
+      embeddings: [[0.1, 0.2, 0.3]],
+      prompt_eval_count: 7,
+      total_duration: 12000000,
+    }),
+  };
+};
+const input = {
+  all: () => [{
+    json: {
+      cleanEmailText: 'A clean email',
+      embeddingModel: 'embeddinggemma',
+      embeddingBaseUrl: 'http://ollama.test:11434',
+    },
+  }],
+};
+
+(async () => {
+  const result = await new AsyncFunction('$input', code)(input);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["emailEmbedding"]["status"], "ok")
+        self.assertEqual(result["emailEmbedding"]["model"], "embeddinggemma")
+        self.assertEqual(result["emailEmbedding"]["dimensions"], 3)
+        self.assertEqual(result["emailEmbedding"]["promptEvalCount"], 7)
+        self.assertEqual(result["emailEmbedding"]["totalDuration"], 12000000)
+        self.assertNotIn("embedding", result)
+        self.assertNotIn("embeddings", result)
+        self.assertNotIn("embeddingVector", result)
+
+    def test_generate_embedding_http_error_redacts_response_body(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Generate email embedding').parameters.jsCode;
+const privateLookingInput = 'PRIVATE_INPUT_SHOULD_NOT_LEAK sender@example.test subject body';
+globalThis.fetch = async () => ({
+  ok: false,
+  status: 500,
+  text: async () => `server echoed ${privateLookingInput}`,
+  json: async () => {
+    throw new Error('json should not be read for failed responses');
+  },
+});
+const input = {
+  all: () => [{
+    json: {
+      cleanEmailText: privateLookingInput,
+      embeddingModel: 'embeddinggemma',
+      embeddingBaseUrl: 'http://ollama.test:11434',
+    },
+  }],
+};
+
+(async () => {
+  await new AsyncFunction('$input', code)(input);
+  throw new Error('Expected embedding request to fail');
+})().catch((error) => {
+  console.log(JSON.stringify({ message: error.message }));
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertIn("Ollama embedding request failed with HTTP 500", result["message"])
+        self.assertNotIn("server echoed", result["message"])
+        self.assertNotIn("PRIVATE_INPUT_SHOULD_NOT_LEAK", result["message"])
+        self.assertNotIn("sender@example.test", result["message"])
+
+    def test_generate_embedding_json_parse_error_redacts_parser_message(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Generate email embedding').parameters.jsCode;
+const privateLookingInput = 'PRIVATE_JSON_PARSE_INPUT_SHOULD_NOT_LEAK sender@example.test subject body';
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  json: async () => {
+    throw new Error(`Unexpected token near ${privateLookingInput}`);
+  },
+});
+const input = {
+  all: () => [{
+    json: {
+      cleanEmailText: privateLookingInput,
+      embeddingModel: 'embeddinggemma',
+      embeddingBaseUrl: 'http://ollama.test:11434',
+    },
+  }],
+};
+
+(async () => {
+  await new AsyncFunction('$input', code)(input);
+  throw new Error('Expected embedding JSON parsing to fail');
+})().catch((error) => {
+  console.log(JSON.stringify({ message: error.message }));
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertIn("Ollama embedding response was not valid JSON", result["message"])
+        self.assertIn("HTTP 200", result["message"])
+        self.assertNotIn("Unexpected token", result["message"])
+        self.assertNotIn("PRIVATE_JSON_PARSE_INPUT_SHOULD_NOT_LEAK", result["message"])
+        self.assertNotIn("sender@example.test", result["message"])
+
+    def test_user_prompt_uses_clean_text_and_bounded_embedding_metadata(self):
+        assignments = self.build_prompt_assignments()
+        value = assignments["userPrompt"]["value"]
+
+        self.assertIn("$json.cleanEmailText", value)
+        self.assertIn("$json.emailEmbedding", value)
+        self.assertNotIn("$json.email_body", value)
+
+    def test_clean_node_sanitizes_body_aliases_and_truncates_by_code_point(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Clean and truncate email').parameters.jsCode;
+const bodyAliases = ['text', 'textPlain', 'body', 'emailBody', 'html', 'textHtml'];
+const inputs = bodyAliases.map((alias) => ({
+  json: {
+    sender_email: 'sender@example.test',
+    email_subject: `Alias body ${alias}`,
+    cleanEmailTextLimit: 12,
+    [alias]: '<p>Alias&nbsp;<strong>clean</strong> text with surplus</p>',
+  },
+}));
+inputs.push({
+  json: {
+    sender_email: 'sender@example.test',
+    email_subject: 'Emoji truncation',
+    email_body: 'abc' + String.fromCodePoint(0x1f600) + 'def',
+    cleanEmailTextLimit: 4,
+  },
+});
+const input = { all: () => inputs };
+
+(async () => {
+  const result = await new AsyncFunction('$input', code)(input);
+  console.log(JSON.stringify(result.map((item) => item.json)));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results = json.loads(completed.stdout)
+        body_aliases = ["text", "textPlain", "body", "emailBody", "html", "textHtml"]
+
+        for result in results[:-1]:
+            self.assertEqual(result["cleanEmailText"], "Alias clean")
+            self.assertEqual(result["email_body"], result["cleanEmailText"])
+            for alias in body_aliases:
+                if alias in result:
+                    self.assertEqual(result[alias], result["cleanEmailText"], alias)
+                    self.assertLessEqual(len(result[alias]), result["cleanEmailTextLimit"])
+
+        emoji_result = results[-1]
+        self.assertEqual(emoji_result["cleanEmailText"], "abc" + chr(0x1F600))
+        self.assertNotRegex(emoji_result["cleanEmailText"], r"[\ud800-\udfff]")
+
+    def test_system_prompt_includes_schedule_and_spam_like_categories(self):
         assignments = self.build_prompt_assignments()
         value = assignments["systemPrompt"]["value"]
 
@@ -404,7 +839,8 @@ const dollar = (name) => {
         self.assertIn("calendar invitation", value)
         self.assertIn("time and place to be", value)
         self.assertIn("`Spam like`", value)
-        self.assertIn("spam or junk mail", value)
+        self.assertIn("category", value)
+        self.assertIn("junk-like", value)
 
     def test_prepare_targets_accepts_schedule_and_spam_like_labels(self):
         script = r"""
@@ -450,17 +886,150 @@ const dollar = (name) => {
         )
         result = json.loads(completed.stdout)
 
-        self.assertEqual(
-            result["labels"],
-            [
-                {"label": "Schedule", "confidence": 0.91},
-                {"label": "Spam like", "confidence": 0.88},
-            ],
+        self.assertEqual(result["category"], {"name": "Schedule", "confidence": 0.91})
+        self.assertEqual(result["labels"], [{"label": "Schedule", "confidence": 0.91}])
+        self.assertEqual(result["targetMailboxes"], ["Labels/Schedule", "Labels/Classified"])
+
+    def test_prepare_targets_accepts_category_shape(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '3542',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    category: { name: 'Schedule', confidence: 0.91 },
+    reason: 'Calendar event notification with a time and place',
+  }),
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        self.assertEqual(
-            result["targetMailboxes"],
-            ["Labels/Schedule", "Labels/Spam like", "Labels/Classified"],
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["category"], {"name": "Schedule", "confidence": 0.91})
+        self.assertEqual(result["labels"], [{"label": "Schedule", "confidence": 0.91}])
+        self.assertEqual(result["targetMailboxes"], ["Labels/Schedule", "Labels/Classified"])
+
+    def test_category_shape_takes_precedence_over_legacy_labels(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '3542',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    category: { name: 'Invoice', confidence: 0.93 },
+    labels: [{ label: 'Spam like', confidence: 0.99 }],
+    reason: 'Receipt for a paid order',
+  }),
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
         )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["category"], {"name": "Invoice", "confidence": 0.93})
+        self.assertEqual(result["labels"], [{"label": "Invoice", "confidence": 0.93}])
+        self.assertEqual(result["targetMailboxes"], ["Labels/Invoice", "Labels/Classified"])
+
+    def test_unknown_low_confidence_or_uncertain_category_only_targets_classified(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const cases = [
+  { category: { name: 'Security alert', confidence: 0.9 }, reason: 'Unknown category' },
+  { category: { name: 'Invoice', confidence: 0.5 }, reason: 'Too weak' },
+  { category: { name: 'uncertain', confidence: 0.4 }, reason: 'Ambiguous' },
+];
+const dollar = () => ({
+  item: {
+    json: {
+      uid: '3542',
+      sourceFlow: 'bulk',
+      runMode: 'apply_labels',
+      labelPrefix: 'Labels',
+      stateLabel: 'Classified',
+    },
+  },
+});
+
+(async () => {
+  const results = [];
+  for (const payload of cases) {
+    const result = await new AsyncFunction('$', '$json', code)(dollar, { output: JSON.stringify(payload) });
+    results.push(result[0].json);
+  }
+  console.log(JSON.stringify(results));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results = json.loads(completed.stdout)
+
+        for result in results:
+            self.assertEqual(result["labels"], [])
+            self.assertEqual(result["labelMailboxes"], [])
+            self.assertEqual(result["targetMailboxes"], ["Labels/Classified"])
+            self.assertEqual(result["category"]["name"], "uncertain")
 
     def test_ollama_model_uses_installed_name(self):
         nodes = self.nodes_by_name()
@@ -525,6 +1094,10 @@ const dollar = (name) => {
         self.assertEqual(
             result["classification"]["labels"],
             [{"label": "uncertain", "confidence": 0}],
+        )
+        self.assertEqual(
+            result["classification"]["category"],
+            {"name": "uncertain", "confidence": 0},
         )
         self.assertEqual(result["labels"], [])
         self.assertEqual(result["labelMailboxes"], [])
