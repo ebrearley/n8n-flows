@@ -1,5 +1,5 @@
 const source = $('Build classification prompt').item.json;
-const allowed = ["Invoice","Purchase","Bill","Payment","Marketing","Cold email","Important","Awaiting reply","Travel","Ticket","Infrastructure","Hustle","Schedule","Spam like"];
+const allowed = ["Invoice","Purchase","Bill","Payment","Marketing","Cold email","Important","Awaiting reply","Travel","Ticket","Infrastructure","Hustle","Schedule","Spam like","Account notification","Statement","Account (security)","Newsletter","Personal"];
 
 function clampConfidence(value) {
   const confidence = Number(value ?? 0);

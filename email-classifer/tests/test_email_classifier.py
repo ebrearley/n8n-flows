@@ -67,6 +67,64 @@ class EmailClassifierTests(unittest.TestCase):
 
         self.assertEqual(categories, ["Invoice", "Purchase", "uncertain"])
 
+    def test_default_labels_include_approved_label_taxonomy(self):
+        for label in (
+            "Account notification",
+            "Statement",
+            "Account (security)",
+            "Newsletter",
+            "Personal",
+        ):
+            self.assertIn(label, classifier.DEFAULT_LABELS)
+            self.assertIn(f"`{label}`", classifier.DEFAULT_SYSTEM_PROMPT)
+
+        self.assertNotIn("Account/Security", classifier.DEFAULT_LABELS)
+        self.assertNotIn("`Account/Security`", classifier.DEFAULT_SYSTEM_PROMPT)
+
+    def test_normalizes_new_labels_and_preserves_account_security_mailbox(self):
+        result = classifier.normalize_classification(
+            json.dumps({
+                "labels": [
+                    {"label": "Account notification", "confidence": 0.91},
+                    {"label": "Statement", "confidence": 0.90},
+                    {"label": "Account (security)", "confidence": 0.89},
+                    {"label": "Newsletter", "confidence": 0.88},
+                    {"label": "Personal", "confidence": 0.87},
+                ],
+                "reason": "Approved taxonomy labels",
+            }),
+            classifier.DEFAULT_LABELS,
+        )
+
+        self.assertEqual(
+            result["folders"],
+            [
+                "Account notification",
+                "Statement",
+                "Account (security)",
+                "Newsletter",
+                "Personal",
+            ],
+        )
+
+        destinations = classifier.classification_destinations(
+            result,
+            state_label="Classified",
+            prefix="Labels",
+        )
+        self.assertEqual(
+            destinations,
+            [
+                "Labels/Account notification",
+                "Labels/Statement",
+                "Labels/Account (security)",
+                "Labels/Newsletter",
+                "Labels/Personal",
+                "Labels/Classified",
+            ],
+        )
+        self.assertNotIn("Labels/Account/Security", destinations)
+
     def test_dry_run_application_reports_all_destinations(self):
         result = classifier.apply_message_to_destinations(
             None,
