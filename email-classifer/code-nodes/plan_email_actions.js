@@ -15,6 +15,11 @@ const ALLOWED_LABELS = new Set([
   'Hustle',
   'Schedule',
   'Spam like',
+  'Account notification',
+  'Statement',
+  'Account (security)',
+  'Newsletter',
+  'Personal',
 ]);
 const EMAIL_MONTHS = {
   Jan: 1,

@@ -72,13 +72,11 @@ Label application stays before action execution so `Labels/Classified` and any a
 
 ## Classifier Output
 
-The classifier should continue returning the current `labels` and `reason` fields. It may also return an optional `action_hints` object for action planning:
+The current classifier prompt returns `category` and `reason` fields. It should also return an optional `action_hints` object for action planning:
 
 ```json
 {
-  "labels": [
-    { "label": "Infrastructure", "confidence": 0.9 }
-  ],
+  "category": { "name": "Infrastructure", "confidence": 0.9 },
   "action_hints": {
     "two_factor_code": false,
     "event_notice": false,

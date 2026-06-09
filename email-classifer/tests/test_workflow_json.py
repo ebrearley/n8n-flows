@@ -751,6 +751,19 @@ const vars = {
         self.assertEqual(result["emailAction"]["destinationMailbox"], "Trash")
         self.assertEqual(result["emailAction"]["reason"], "expired_two_factor_code")
 
+    def test_plan_email_actions_trashes_expired_account_security_two_factor_code(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "date": "Mon, 08 Jun 2026 10:00:00 +1000",
+            "labels": [{"label": "Account (security)", "confidence": 0.91}],
+            "actionHints": {"two_factor_code": True},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "move_to_trash")
+        self.assertEqual(result["emailAction"]["destinationMailbox"], "Trash")
+        self.assertEqual(result["emailAction"]["reason"], "expired_two_factor_code")
+
     def test_plan_email_actions_keeps_recent_two_factor_code(self):
         result = self.run_plan_email_actions({
             "emailActionsMode": "live",
