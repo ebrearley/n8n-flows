@@ -164,7 +164,7 @@ const $ = (name) => {
     def test_configure_node_defines_credential_pair_list(self):
         assignments = self.configure_assignments()
         self.assertIn("imapPairsJson", assignments)
-        self.assertEqual(assignments["maxBatches"]["value"], 0)
+        self.assertEqual(assignments["maxBatches"]["value"], 1)
         self.assertEqual(assignments["rawFetchByteLimit"]["value"], 65536)
         self.assertEqual(assignments["fetchWatchdogMs"]["value"], 120000)
         self.assertEqual(assignments["uidSearchWindow"]["value"], 500)
@@ -313,11 +313,11 @@ const json = {
         self.assertIn("fetchHeadersForUids", code)
         self.assertNotIn("searchAll(sourceMailbox", code)
 
-    def test_fetch_supports_optional_batch_limit_without_capping_manual_backfill(self):
+    def test_fetch_supports_optional_batch_limit_for_short_backfill_executions(self):
         assignments = self.configure_assignments()
         code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
 
-        self.assertEqual(assignments["maxBatches"]["value"], 0)
+        self.assertEqual(assignments["maxBatches"]["value"], 1)
         self.assertIn("maxBatches", code)
         self.assertIn("max_batches_reached", code)
         self.assertIn("runIndex >= defaults.maxBatches", code)
@@ -362,64 +362,95 @@ const json = {
             "Telemetry finish run",
         )
 
-    def test_loop_done_path_collapses_to_one_control_item_before_next_fetch(self):
+    def test_backfill_defaults_to_one_batch_per_execution(self):
+        assignments = self.configure_assignments()
+
+        self.assertEqual(assignments["maxBatches"]["value"], 1)
+
+    def test_bulk_loop_collects_prepared_labels_before_batch_apply(self):
         workflow = self.load_workflow()
         nodes = self.nodes_by_name()
 
-        self.assertIn("Prepare next fetch control item", nodes)
+        self.assertIn("Prepare label batch", nodes)
         self.assertEqual(
             workflow["connections"]["Loop Over Emails"]["main"][0][0]["node"],
-            "Prepare next fetch control item",
+            "Prepare label batch",
         )
         self.assertEqual(
-            workflow["connections"]["Prepare next fetch control item"]["main"][0][0]["node"],
-            "Telemetry start step: Fetch next unclassified emails",
+            workflow["connections"]["Prepare label batch"]["main"][0][0]["node"],
+            "Telemetry start step: Apply Proton labels",
+        )
+        self.assertEqual(
+            workflow["connections"]["From bulk loop?"]["main"][0][0]["node"],
+            "Loop Over Emails",
+        )
+        self.assertEqual(
+            workflow["connections"]["Telemetry restore label action payload"]["main"][0][0]["node"],
+            "Telemetry start step: Finish run",
         )
 
-        code = nodes["Prepare next fetch control item"]["parameters"]["jsCode"]
-        self.assertIn("$input.first()?.json", code)
-        self.assertIn("return [{", code)
-        self.assertIn("telemetry: telemetrySource", code)
-        self.assertNotIn("email_body", code)
-        self.assertNotIn("body_preview", code)
+    def test_bulk_path_bypasses_prompt_and_prepare_step_telemetry(self):
+        workflow = self.load_workflow()
 
+        self.assertEqual(
+            workflow["connections"]["Loop Over Emails"]["main"][1][0]["node"],
+            "Build classification prompt",
+        )
+        self.assertEqual(
+            workflow["connections"]["Build classification prompt"]["main"][0][0]["node"],
+            "Telemetry start step: Classify with Ollama",
+        )
+        self.assertEqual(
+            workflow["connections"]["Telemetry restore classification payload"]["main"][0][0]["node"],
+            "Prepare Proton label targets",
+        )
+        self.assertEqual(
+            workflow["connections"]["Prepare Proton label targets"]["main"][0][0]["node"],
+            "Inspect Proton label targets",
+        )
+
+    def test_prepare_label_batch_collapses_items_without_private_content(self):
         result = self.run_workflow_code_node(
-            "Prepare next fetch control item",
+            "Prepare label batch",
             [
                 {
                     "json": {
-                        "email_subject": "private subject",
+                        "uid": "101",
+                        "message_id": "<101@example.test>",
+                        "email_item_id": "email-item-101",
                         "email_body": "private body",
-                        "batchLimit": 50,
-                        "telemetry": {"run_id": "run-from-email"},
+                        "body_preview": "private preview",
+                        "userPrompt": "private prompt",
+                        "systemPrompt": "private system prompt",
+                        "targetMailboxes": ["Labels/Classified"],
+                        "telemetry": {"run_id": "run-1"},
                     },
                 },
                 {
                     "json": {
-                        "email_subject": "another private subject",
+                        "uid": "102",
+                        "message_id": "<102@example.test>",
+                        "email_item_id": "email-item-102",
                         "email_body": "another private body",
+                        "body_preview": "another private preview",
+                        "userPrompt": "another private prompt",
+                        "targetMailboxes": ["Labels/Classified", "Labels/Important"],
+                        "telemetry": {"run_id": "run-1"},
                     },
                 },
             ],
-            {
-                "Configure Proton IMAP batch": [
-                    {
-                        "json": {
-                            "batchLimit": 50,
-                            "maxBatches": 3,
-                            "imapPairsJson": "[]",
-                            "telemetry": {"run_id": "run-from-config"},
-                        },
-                    },
-                ],
-            },
         )
+
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["json"]["telemetry"]["run_id"], "run-from-config")
-        self.assertEqual(result[0]["json"]["batchLimit"], 50)
-        self.assertEqual(result[0]["json"]["maxBatches"], 3)
-        self.assertNotIn("email_subject", result[0]["json"])
-        self.assertNotIn("email_body", result[0]["json"])
+        batch = result[0]["json"]["label_batch_items"]
+        self.assertEqual([item["uid"] for item in batch], ["101", "102"])
+        self.assertEqual(result[0]["json"]["total_emails"], 2)
+        self.assertEqual(result[0]["json"]["stopped_reason"], "batch_processed")
+        self.assertEqual(result[0]["json"]["run_id"], "run-1")
+        self.assertNotIn("email_body", batch[0])
+        self.assertNotIn("body_preview", batch[0])
+        self.assertNotIn("userPrompt", batch[0])
+        self.assertNotIn("systemPrompt", batch[0])
 
     def test_loop_over_emails_resets_only_for_fresh_fetch_batches(self):
         nodes = self.nodes_by_name()
@@ -603,17 +634,9 @@ const json = {
                 "node": "Expand fetched emails",
                 "sort": 40,
             },
-            "Build classification prompt": {
-                "node": "Build classification prompt",
-                "sort": 50,
-            },
             "Classify with Ollama": {
                 "node": "Classify with Ollama",
                 "sort": 60,
-            },
-            "Prepare Proton label targets": {
-                "node": "Prepare Proton label targets",
-                "sort": 70,
             },
             "Apply Proton labels": {
                 "node": "Apply Proton labels",
@@ -776,7 +799,7 @@ const json = {
 
     def test_generated_step_start_overrides_previous_stage_metadata(self):
         result = self.run_workflow_code_node(
-            "Telemetry start step: Build classification prompt",
+            "Telemetry start step: Classify with Ollama",
             [
                 {
                     "json": {
@@ -791,12 +814,12 @@ const json = {
         )
         output = result[0]["json"]
 
-        self.assertEqual(output["telemetry_step_name"], "Build classification prompt")
+        self.assertEqual(output["telemetry_step_name"], "Classify with Ollama")
         self.assertEqual(output["telemetry_step_type"], "n8n-stage")
-        self.assertEqual(output["telemetry_step_sort_order"], 50)
-        self.assertEqual(output["telemetry_step_params"][1], "Build classification prompt")
+        self.assertEqual(output["telemetry_step_sort_order"], 60)
+        self.assertEqual(output["telemetry_step_params"][1], "Classify with Ollama")
         self.assertEqual(output["telemetry_step_params"][2], "n8n-stage")
-        self.assertEqual(output["telemetry_step_params"][3], 50)
+        self.assertEqual(output["telemetry_step_params"][3], 60)
 
     def test_generated_finish_step_recovers_step_id_for_replaced_and_fanned_out_items(self):
         step_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -941,11 +964,11 @@ const json = {
         )
         self.assertEqual(
             connections["Telemetry restore email item payload (trigger)"]["main"][0][0]["node"],
-            "Telemetry start step: Build classification prompt",
+            "Build classification prompt",
         )
         self.assertEqual(
-            connections["Telemetry restore step start: Build classification prompt"]["main"][0][0]["node"],
-            "Build classification prompt",
+            connections["Build classification prompt"]["main"][0][0]["node"],
+            "Telemetry start step: Classify with Ollama",
         )
         self.assertEqual(
             connections["Classify with Ollama"]["main"][0][0]["node"],
@@ -957,15 +980,15 @@ const json = {
         )
         self.assertEqual(
             connections["Telemetry restore classification payload"]["main"][0][0]["node"],
-            "Telemetry start step: Prepare Proton label targets",
-        )
-        self.assertEqual(
-            connections["Telemetry restore step start: Prepare Proton label targets"]["main"][0][0]["node"],
             "Prepare Proton label targets",
         )
         self.assertEqual(
+            connections["Prepare Proton label targets"]["main"][0][0]["node"],
+            "Inspect Proton label targets",
+        )
+        self.assertEqual(
             connections["Telemetry restore label action payload"]["main"][0][0]["node"],
-            "Loop Over Emails",
+            "Telemetry start step: Finish run",
         )
         self.assertEqual(
             connections["Telemetry restore label action payload (trigger)"]["main"][0][0]["node"],
