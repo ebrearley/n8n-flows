@@ -555,6 +555,176 @@ const baseItem = {
         self.assertEqual(results["skipped"]["email_action_status"], "skipped_no_action")
         self.assertEqual(results["skipped"]["email_action_destination"], "")
 
+    def run_execute_email_action_fake_imap(self, scenario):
+        script = r"""
+const fs = require('fs');
+const Module = require('module');
+const { EventEmitter } = require('events');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Execute email action').parameters.jsCode;
+const scenario = process.argv[1];
+const commands = [];
+const FAKE_DESTINATION = 'Archive';
+
+function taggedResponse(tag, command) {
+  commands.push(command);
+  if (command.startsWith('LOGIN ')) {
+    return `${tag} OK LOGIN completed\r\n`;
+  }
+  if (command.startsWith('LIST ')) {
+    if (scenario === 'missing') {
+      return `${tag} OK LIST completed\r\n`;
+    }
+    return `* LIST () "/" "${FAKE_DESTINATION}"\r\n${tag} OK LIST completed\r\n`;
+  }
+  if (command.startsWith('SELECT ')) {
+    return `${tag} OK [UIDNEXT 4243] SELECT completed\r\n`;
+  }
+  if (command.startsWith('UID MOVE ')) {
+    return `${tag} OK UID MOVE completed\r\n`;
+  }
+  if (command.startsWith('UID SEARCH ')) {
+    return `* SEARCH 4242\r\n${tag} OK UID SEARCH completed\r\n`;
+  }
+  if (command.startsWith('LOGOUT')) {
+    return `${tag} OK LOGOUT completed\r\n`;
+  }
+  return `${tag} BAD unexpected command\r\n`;
+}
+
+class FakeSocket extends EventEmitter {
+  constructor() {
+    super();
+    process.nextTick(() => {
+      this.emit('connect');
+      this.emit('data', '* OK synthetic IMAP server ready\r\n');
+    });
+  }
+
+  setEncoding() {}
+
+  write(data) {
+    const line = String(data).trim();
+    const space = line.indexOf(' ');
+    const tag = line.slice(0, space);
+    const command = line.slice(space + 1);
+    this.emit('data', taggedResponse(tag, command));
+  }
+
+  end() {}
+}
+
+const fakeNet = {
+  isIP: () => 1,
+  connect: () => new FakeSocket(),
+};
+const originalLoad = Module._load;
+Module._load = function load(request, parent, isMain) {
+  if (request === 'net') return fakeNet;
+  return originalLoad.call(this, request, parent, isMain);
+};
+
+const item = {
+  uid: '4242',
+  message_id: '<synthetic-message@example.test>',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  sourceMailbox: 'INBOX',
+  email_body: 'private synthetic email body should not leave executor',
+  userPrompt: 'prompt containing private synthetic email body',
+  systemPrompt: 'full classifier system prompt',
+  api_key: 'sk-synthetic-secret',
+  imapPassword: 'synthetic-imap-password',
+  rawImapCommand: 'UID MOVE 4242 "Archive"',
+  rawServerResponse: 'A0004 OK UID MOVE completed',
+  credentialPair: {
+    id: 'synthetic-imap',
+    host: '127.0.0.1',
+    port: 1143,
+    ssl: false,
+    startTls: false,
+    allowUnauthorizedCerts: true,
+    userVar: 'IMAP_USER',
+    passwordVar: 'IMAP_PASSWORD',
+  },
+  emailActionsMode: 'live',
+  emailAction: {
+    action: 'archive',
+    destinationMailbox: FAKE_DESTINATION,
+    reason: 'past_event',
+    approved: true,
+    mode: 'live',
+  },
+};
+const input = { first: () => ({ json: item }) };
+const vars = {
+  IMAP_USER: 'synthetic-user@example.test',
+  IMAP_PASSWORD: 'synthetic-password-value',
+};
+
+(async () => {
+  try {
+    const result = await new AsyncFunction('$input', '$vars', code)(input, vars);
+    console.log(JSON.stringify({ json: result[0].json, commands }));
+  } finally {
+    Module._load = originalLoad;
+  }
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script, scenario],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
+    def assert_execute_email_action_output_is_sanitized(self, result):
+        serialized = json.dumps(result)
+
+        self.assertNotIn("email_body", result)
+        self.assertNotIn("userPrompt", result)
+        self.assertNotIn("systemPrompt", result)
+        self.assertNotIn("api_key", result)
+        self.assertNotIn("imapPassword", result)
+        self.assertNotIn("rawImapCommand", result)
+        self.assertNotIn("rawServerResponse", result)
+        self.assertNotIn("credentialPair", result)
+        self.assertNotIn("private synthetic email body", serialized)
+        self.assertNotIn("full classifier system prompt", serialized)
+        self.assertNotIn("sk-synthetic-secret", serialized)
+        self.assertNotIn("synthetic-imap-password", serialized)
+        self.assertNotIn('UID MOVE 4242 "Archive"', serialized)
+        self.assertNotIn("A0004 OK UID MOVE", serialized)
+        self.assertNotIn("IMAP_PASSWORD", serialized)
+
+    def test_execute_email_action_missing_destination_skips_without_move(self):
+        result = self.run_execute_email_action_fake_imap("missing")
+
+        self.assertEqual(result["json"]["email_action_status"], "skipped_missing_mailbox")
+        self.assertEqual(result["json"]["email_action_destination"], "Archive")
+        self.assertEqual(result["json"]["email_action_error"], "destination_mailbox_missing")
+        self.assertNotIn('UID MOVE 4242 "Archive"', result["commands"])
+        self.assertFalse(
+            any(command.startswith("UID MOVE ") for command in result["commands"]),
+            result["commands"],
+        )
+        self.assert_execute_email_action_output_is_sanitized(result["json"])
+
+    def test_execute_email_action_live_success_moves_uid_and_reports_status(self):
+        result = self.run_execute_email_action_fake_imap("success")
+
+        self.assertIn('UID MOVE 4242 "Archive"', result["commands"])
+        self.assertEqual(result["json"]["email_action_status"], "moved")
+        self.assertEqual(result["json"]["email_action_destination"], "Archive")
+        self.assertEqual(result["json"]["source_action"], "archive")
+        self.assert_execute_email_action_output_is_sanitized(result["json"])
+
     def test_plan_email_actions_moves_spam_like_to_spam(self):
         result = self.run_plan_email_actions({
             "emailActionsMode": "live",
