@@ -82,6 +82,32 @@ class WorkflowJsonTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    def run_plan_email_actions(self, item):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Plan email actions').parameters.jsCode;
+const item = JSON.parse(process.argv[1]);
+const input = { first: () => ({ json: item }) };
+
+(async () => {
+  const result = await new AsyncFunction('$input', code)(input);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script, json.dumps(item)],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
     def test_imap_action_nodes_are_javascript_code_nodes(self):
         nodes = self.nodes_by_name()
 
@@ -136,6 +162,130 @@ class WorkflowJsonTests(unittest.TestCase):
         self.assertEqual(assignments["actionArchiveMailbox"]["value"], "Archive")
         self.assertEqual(assignments["actionSpamMailbox"]["value"], "Spam")
         self.assertEqual(assignments["actionTrashMailbox"]["value"], "Trash")
+
+    def test_plan_email_actions_moves_spam_like_to_spam(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Spam like", "confidence": 0.9}],
+            "actionHints": {},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "move_to_spam")
+        self.assertEqual(result["emailAction"]["destinationMailbox"], "Spam")
+        self.assertEqual(result["emailAction"]["reason"], "spam_like")
+        self.assertIs(result["emailAction"]["approved"], True)
+
+    def test_plan_email_actions_trashes_expired_two_factor_code(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "date": "Mon, 08 Jun 2026 10:00:00 +1000",
+            "labels": [{"label": "Important", "confidence": 0.8}],
+            "actionHints": {"two_factor_code": True},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "move_to_trash")
+        self.assertEqual(result["emailAction"]["destinationMailbox"], "Trash")
+        self.assertEqual(result["emailAction"]["reason"], "expired_two_factor_code")
+
+    def test_plan_email_actions_keeps_recent_two_factor_code(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "date": "Tue, 09 Jun 2026 02:00:00 +1000",
+            "labels": [{"label": "Important", "confidence": 0.8}],
+            "actionHints": {"two_factor_code": True},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_archives_past_event_only(self):
+        past = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Schedule", "confidence": 0.91}],
+            "actionHints": {
+                "event_notice": True,
+                "event_time": "2026-06-09T08:00:00+10:00"
+            },
+        })
+        future = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Schedule", "confidence": 0.91}],
+            "actionHints": {
+                "event_notice": True,
+                "event_time": "2026-06-09T18:00:00+10:00"
+            },
+        })
+
+        self.assertEqual(past["emailAction"]["action"], "archive")
+        self.assertEqual(past["emailAction"]["destinationMailbox"], "Archive")
+        self.assertEqual(past["emailAction"]["reason"], "past_event")
+        self.assertEqual(future["emailAction"]["action"], "none")
+
+    def test_plan_email_actions_archives_successful_backup_only(self):
+        success = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+            "actionHints": {
+                "backup_job": True,
+                "backup_status": "success",
+                "has_errors": False
+            },
+        })
+        warning = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+            "actionHints": {
+                "backup_job": True,
+                "backup_status": "warning",
+                "has_errors": True
+            },
+        })
+
+        self.assertEqual(success["emailAction"]["action"], "archive")
+        self.assertEqual(success["emailAction"]["reason"], "successful_backup")
+        self.assertEqual(warning["emailAction"]["action"], "none")
+
+    def test_plan_email_actions_uses_spam_precedence(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "date": "Mon, 08 Jun 2026 10:00:00 +1000",
+            "labels": [
+                {"label": "Spam like", "confidence": 0.9},
+                {"label": "Schedule", "confidence": 0.9},
+                {"label": "Infrastructure", "confidence": 0.9}
+            ],
+            "actionHints": {
+                "two_factor_code": True,
+                "event_notice": True,
+                "event_time": "2026-06-09T08:00:00+10:00",
+                "backup_job": True,
+                "backup_status": "success",
+                "has_errors": False
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "move_to_spam")
+        self.assertEqual(result["emailAction"]["reason"], "spam_like")
+
+    def test_plan_email_actions_supports_disabled_mode(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "disabled",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Spam like", "confidence": 0.9}],
+            "actionHints": {},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertEqual(result["emailAction"]["reason"], "actions_disabled")
+        self.assertIs(result["emailAction"]["approved"], False)
 
     def test_workflow_does_not_use_execute_command_nodes(self):
         workflow = self.load_workflow()
