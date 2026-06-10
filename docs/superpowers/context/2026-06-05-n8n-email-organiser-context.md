@@ -8,7 +8,7 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 For the newest cross-repo handoff, read `docs/superpowers/context/2026-06-08-agent-handoff-context.md` and root `AGENTS.md`.
 
-`Email Organiser` (`fm6pLPnZWsGfK1oH`) is the n8n workflow for Proton IMAP email classification. It has a visible batch loop, visible Ollama AI classification node, raw JSON parsing in Proton label target preparation, an empty-batch stop guard, and separate JavaScript Code-node apply paths for bulk and trigger processing.
+`Email Organiser` (`fm6pLPnZWsGfK1oH`) is the n8n workflow for Proton IMAP email classification. It has a visible batch loop, visible Ollama AI classification node, raw JSON parsing in Proton label target preparation, an empty-batch stop guard, and JavaScript Code-node paths for IMAP fetch, label application, and post-label action planning/execution.
 
 The latest verified live n8n workflow from the setup session was imported and published, then left inactive. `Configure Proton IMAP batch` sets `maxBatches=0` for full backfill, so a backfill/manual execution keeps fetching 50-email batches until no unclassified emails remain.
 
@@ -27,7 +27,19 @@ The bulk fetch path avoids full mailbox and classified-message preloads. It scan
 
 Proton Mail exposes UI labels as nested mailboxes under `Labels`. The workflow applies accepted labels as `Labels/<label>` and applies `Labels/Classified` to every classified email.
 
-The workflow must not create labels, create folders, move messages, delete messages, or expunge.
+During label application, the workflow must not create labels, create folders, move messages, delete messages, or expunge.
+
+## Email Action Phase
+
+The email action phase was designed on 2026-06-09. It moves selected messages after labels are applied. Actions are live by default, with optional `dry_run` and `disabled` modes.
+
+Verified action mailboxes from the live n8n runtime IMAP connection:
+
+- `Archive` (`\Archive`)
+- `Spam` (`\Junk`)
+- `Trash` (`\Trash`)
+
+The action executor must use `UID MOVE` and must not use `EXPUNGE`, folder creation, or delete fallbacks.
 
 ## Workflow Shape
 
@@ -43,8 +55,10 @@ Backfill Form Trigger
   -> Build classification prompt
   -> Classify with Ollama
   -> Prepare Proton label targets
+  -> Plan email actions
   -> From bulk loop?
   -> Apply Proton labels
+  -> Execute email action
   -> Loop Over Emails / next batch
 ```
 
@@ -57,8 +71,10 @@ Email Trigger (IMAP)
   -> Build classification prompt
   -> Classify with Ollama
   -> Prepare Proton label targets
+  -> Plan email actions
   -> From bulk loop?
   -> Apply Proton labels (trigger)
+  -> Execute email action (trigger)
 ```
 
 ## Ollama
@@ -68,7 +84,7 @@ Email Trigger (IMAP)
 - Base URL: `http://192.168.1.100:11434`
 - Model: `gemma4-26b:4090`
 
-The Python helper is retained only as legacy local test coverage. The current workflow performs IMAP fetch and label application inside n8n JavaScript Code nodes, and n8n performs classification through the visible AI node.
+The Python helper is retained only as legacy local test coverage. The current workflow performs IMAP fetch, label application, and post-label action planning/execution inside n8n JavaScript Code nodes, and n8n performs classification through the visible AI node.
 
 During setup, `Classify with Ollama` has retry disabled so model errors stop the workflow and are visible in the execution.
 
@@ -78,7 +94,7 @@ During setup, `Classify with Ollama` has retry disabled so model errors stop the
 
 The `Email Trigger (IMAP)` node uses the IMAP credential assigned in n8n.
 
-The bulk fetch and label-application Code nodes cannot read n8n credential secrets directly. They use `imapPairsJson` on `Configure Proton IMAP batch` to define one or more IMAP credential pairs. Each pair names the variables that hold its credentials. The default placeholders are:
+The bulk fetch, label-application, and action Code nodes cannot read n8n credential secrets directly. They use `imapPairsJson` on `Configure Proton IMAP batch` to define one or more IMAP credential pairs. Each pair names the variables that hold its credentials. The default placeholders are:
 
 ```bash
 IMAP_1_USER=...

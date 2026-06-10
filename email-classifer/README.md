@@ -8,7 +8,7 @@ The directory name intentionally matches the requested spelling: `email-classife
 
 - `workflow.json`: importable n8n workflow JSON for the bulk and trigger workflow.
 - `workflow-imap-trigger.json`: equivalent export retained for compatibility.
-- `code-nodes/`: JavaScript used by the n8n Code nodes for IMAP fetch and label application.
+- `code-nodes/`: JavaScript used by the n8n Code nodes for IMAP fetch, label application, and post-label action planning/execution.
 - `email_classifier.py`: legacy Python helper retained for unit-tested behavior references.
 - `tests/`: unit tests for classifier helper behavior.
 
@@ -30,7 +30,9 @@ Backfill Form Trigger
   -> Build classification prompt
   -> Classify with Ollama
   -> Prepare Proton label targets
+  -> Plan email actions
   -> Apply Proton labels
+  -> Execute email action
   -> Loop Over Emails / next 50
 ```
 
@@ -43,12 +45,14 @@ Email Trigger (IMAP)
   -> Build classification prompt
   -> Classify with Ollama
   -> Prepare Proton label targets
+  -> Plan email actions
   -> Apply Proton labels (trigger)
+  -> Execute email action (trigger)
 ```
 
 Classification happens in the visible n8n AI Agent node `Classify with Ollama`, backed by the `Ollama Chat Model` node using `gemma4-26b:4090` at `http://192.168.1.100:11434`.
 
-The current workflow uses n8n JavaScript Code nodes for IMAP fetch and label application. The Python helper is retained as legacy local test coverage only.
+The current workflow uses n8n JavaScript Code nodes for IMAP fetch, label application, and post-label action planning/execution. The Python helper is retained as legacy local test coverage only.
 
 The editor-only `Manual Trigger` has been removed from the current export. Use `Backfill Form Trigger` for explicit backfill starts.
 
@@ -82,15 +86,29 @@ Proton exposes UI labels through IMAP as mailboxes nested under the top-level `L
 
 `Classified` is the state marker and is applied as `Labels/Classified`.
 
-The workflow does not create labels, create folders, move source messages, delete source messages, or expunge. It applies labels by copying the message to existing `Labels/*` mailboxes and keeps the original message in `INBOX`.
+During label application, the workflow does not create labels, create folders, delete source messages, move source messages, or expunge. It applies labels by copying the message to existing `Labels/*` mailboxes, before any post-label action phase runs.
 
 `uncertain` is a classifier fallback only. It is not applied as a Proton label.
+
+## Proton Actions
+
+The workflow can move messages after classification and label application. Actions are live by default through `emailActionsMode=live`.
+
+Verified Proton Bridge IMAP action mailboxes:
+
+- archive: `Archive`
+- spam/junk: `Spam`
+- trash/bin: `Trash`
+
+The workflow plans actions in `Plan email actions`, then applies labels first, then runs `Execute email action` or `Execute email action (trigger)`.
+
+The executor uses `UID MOVE` only. It does not create folders, hard delete, or expunge. If an action is ambiguous, the destination mailbox is missing, or required date evidence is invalid, it skips the move and leaves a visible action status.
 
 ## Required n8n Runtime
 
 The live `Email Trigger (IMAP)` node uses the credential assigned in n8n.
 
-The bulk fetch and label-application Code nodes cannot read the `Email Trigger (IMAP)` credential secrets directly, so each IMAP account is configured as an entry in `imapPairsJson` on `Configure Proton IMAP batch`.
+The bulk fetch, label-application, and action Code nodes cannot read the `Email Trigger (IMAP)` credential secrets directly, so each IMAP account is configured as an entry in `imapPairsJson` on `Configure Proton IMAP batch`.
 
 `Configure Proton IMAP batch` sets `maxBatches=0`, so the manual workflow keeps fetching 50-email batches until the inbox is classified. Set `maxBatches` to a positive number only when you want a deliberately capped test run.
 

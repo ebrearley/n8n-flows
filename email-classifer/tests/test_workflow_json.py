@@ -1,5 +1,8 @@
+import importlib.util
 import json
+import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -61,6 +64,102 @@ class WorkflowJsonTests(unittest.TestCase):
         }
         return assignments["systemPrompt"]["value"]
 
+    def system_prompt_value(self):
+        return self.build_prompt_assignments()["systemPrompt"]["value"]
+
+    def system_prompt_json_snippets(self):
+        snippets = []
+        for match in re.finditer(r"```json\n([\s\S]*?)\n```", self.system_prompt_value()):
+            snippets.append(json.loads(match.group(1)))
+        return snippets
+
+    def load_workflow_updater(self):
+        updater_path = ROOT / "tools" / "apply_email_action_workflow_updates.py"
+        spec = importlib.util.spec_from_file_location(
+            "apply_email_action_workflow_updates", updater_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def run_plan_email_actions(self, item):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Plan email actions').parameters.jsCode;
+const item = JSON.parse(process.argv[1]);
+const input = { first: () => ({ json: item }) };
+
+(async () => {
+  const result = await new AsyncFunction('$input', code)(input);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script, json.dumps(item)],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
+    def run_prepare_then_plan_email_actions(self, classifier_output, source_overrides=None):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const prepareCode = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const planCode = workflow.nodes.find((node) => node.name === 'Plan email actions').parameters.jsCode;
+const classifierOutput = JSON.parse(process.argv[1]);
+const sourceOverrides = JSON.parse(process.argv[2]);
+const source = {
+  uid: 'synthetic-uid',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+  emailActionsMode: 'live',
+  actionNow: '2026-06-09T12:00:00+10:00',
+  actionArchiveMailbox: 'Archive',
+  actionSpamMailbox: 'Spam',
+  actionTrashMailbox: 'Trash',
+  ...sourceOverrides,
+};
+const aiOutput = { output: JSON.stringify(classifierOutput) };
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const prepared = await new AsyncFunction('$', '$json', prepareCode)(dollar, aiOutput);
+  const planned = await new AsyncFunction('$input', planCode)({ first: () => prepared[0] });
+  console.log(JSON.stringify({ prepared: prepared[0].json, planned: planned[0].json }));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            [
+                "node",
+                "-e",
+                script,
+                json.dumps(classifier_output),
+                json.dumps(source_overrides or {}),
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
     def test_imap_action_nodes_are_javascript_code_nodes(self):
         nodes = self.nodes_by_name()
 
@@ -71,6 +170,893 @@ class WorkflowJsonTests(unittest.TestCase):
         ):
             self.assertEqual(nodes[name]["type"], "n8n-nodes-base.code")
             self.assertEqual(nodes[name]["parameters"]["language"], "javaScript")
+
+    def test_email_action_nodes_are_javascript_code_nodes(self):
+        nodes = self.nodes_by_name()
+
+        for name in (
+            "Plan email actions",
+            "Execute email action",
+            "Execute email action (trigger)",
+        ):
+            self.assertEqual(nodes[name]["type"], "n8n-nodes-base.code")
+            self.assertEqual(nodes[name]["parameters"]["language"], "javaScript")
+
+    def test_code_node_sources_match_workflow_exports(self):
+        workflows = [
+            self.load_workflow(),
+            json.loads((ROOT / "workflow-imap-trigger.json").read_text(encoding="utf-8")),
+        ]
+        source_files = {
+            "Plan email actions": "plan_email_actions.js",
+            "Prepare Proton label targets": "prepare_proton_label_targets.js",
+            "Execute email action": "execute_email_action.js",
+            "Execute email action (trigger)": "execute_email_action.js",
+        }
+
+        for workflow in workflows:
+            nodes = {node["name"]: node for node in workflow["nodes"]}
+            for node_name, source_file in source_files.items():
+                with self.subTest(workflow=workflow["name"], node=node_name):
+                    expected = (ROOT / "code-nodes" / source_file).read_text(encoding="utf-8")
+                    actual = nodes[node_name]["parameters"]["jsCode"]
+                    self.assertEqual(actual, expected)
+
+    def test_email_action_nodes_are_wired_after_label_target_preparation(self):
+        workflow = self.load_workflow()
+
+        self.assertEqual(
+            workflow["connections"]["Prepare Proton label targets"]["main"][0][0]["node"],
+            "Plan email actions",
+        )
+        self.assertEqual(
+            workflow["connections"]["Plan email actions"]["main"][0][0]["node"],
+            "Inspect Proton label targets",
+        )
+        self.assertEqual(
+            workflow["connections"]["Apply Proton labels"]["main"][0][0]["node"],
+            "Execute email action",
+        )
+        self.assertEqual(
+            workflow["connections"]["Execute email action"]["main"][0][0]["node"],
+            "Loop Over Emails",
+        )
+        self.assertEqual(
+            workflow["connections"]["Apply Proton labels (trigger)"]["main"][0][0]["node"],
+            "Execute email action (trigger)",
+        )
+        self.assertNotIn("Execute email action (trigger)", workflow["connections"])
+
+    def test_configure_node_sets_live_email_action_defaults(self):
+        assignments = self.configure_assignments()
+
+        self.assertEqual(assignments["emailActionsMode"]["value"], "live")
+        self.assertEqual(assignments["actionArchiveMailbox"]["value"], "Archive")
+        self.assertEqual(assignments["actionSpamMailbox"]["value"], "Spam")
+        self.assertEqual(assignments["actionTrashMailbox"]["value"], "Trash")
+
+    def test_execute_email_action_uses_uid_move_without_expunge_or_delete_fallback(self):
+        nodes = self.nodes_by_name()
+
+        for name in ("Execute email action", "Execute email action (trigger)"):
+            code = nodes[name]["parameters"]["jsCode"]
+            self.assertIn("moveUid", code)
+            self.assertIn("UID MOVE", code)
+            self.assertIn("mailboxExists", code)
+            self.assertIn("searchMessageId", code)
+            self.assertNotIn("EXPUNGE", code)
+            self.assertNotIn("STORE +FLAGS", code)
+            self.assertNotIn("CREATE", code)
+
+    def test_execute_email_action_redacts_raw_imap_commands_from_errors(self):
+        nodes = self.nodes_by_name()
+
+        for name in ("Execute email action", "Execute email action (trigger)"):
+            code = nodes[name]["parameters"]["jsCode"]
+            self.assertIn(
+                "command(commandText, timeoutMs = 60000, operation = commandText.split(/\\s+/)[0])",
+                code,
+            )
+            self.assertIn("IMAP ${operation} failed", code)
+            self.assertNotIn("IMAP ${commandText} failed", code)
+            self.assertNotIn("failed: ${response}", code)
+            self.assertIn(
+                "await this.command(`LOGIN ${quoteString(username)} ${quoteString(password)}`, 60000, 'LOGIN');",
+                code,
+            )
+
+    def test_execute_email_action_suppresses_raw_imap_failure_responses(self):
+        script = r"""
+const fs = require('fs');
+const Module = require('module');
+const { EventEmitter } = require('events');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Execute email action').parameters.jsCode;
+
+const FAKE_USER = 'synthetic-user@example.test';
+const FAKE_PASSWORD = 'synthetic-password-value';
+const FAKE_MESSAGE_ID = '<synthetic-message-id-secret@example.test>';
+const FAKE_DESTINATION = 'Synthetic Sensitive Destination';
+
+function taggedResponse(tag, command, scenario) {
+  if (command.startsWith('LOGIN ')) {
+    if (scenario === 'login') {
+      return `${tag} NO ${command} failed for ${FAKE_USER} ${FAKE_PASSWORD}\r\n`;
+    }
+    return `${tag} OK LOGIN completed\r\n`;
+  }
+  if (command.startsWith('LIST ')) {
+    return `* LIST () "/" "${FAKE_DESTINATION}"\r\n${tag} OK LIST completed\r\n`;
+  }
+  if (command.startsWith('SELECT ')) {
+    return `${tag} OK SELECT completed\r\n`;
+  }
+  if (command.startsWith('UID SEARCH ')) {
+    if (scenario === 'search') {
+      return `${tag} NO ${command} failed for ${FAKE_MESSAGE_ID}\r\n`;
+    }
+    return `* SEARCH 4242\r\n${tag} OK UID SEARCH completed\r\n`;
+  }
+  if (command.startsWith('UID MOVE ')) {
+    if (scenario === 'move') {
+      return `${tag} NO ${command} failed for ${FAKE_DESTINATION}\r\n`;
+    }
+    return `${tag} OK UID MOVE completed\r\n`;
+  }
+  if (command.startsWith('LOGOUT')) {
+    return `${tag} OK LOGOUT completed\r\n`;
+  }
+  return `${tag} BAD ${command} was unexpected\r\n`;
+}
+
+async function runScenario(scenario) {
+  class FakeSocket extends EventEmitter {
+    constructor() {
+      super();
+      process.nextTick(() => {
+        this.emit('connect');
+        this.emit('data', '* OK synthetic IMAP server ready\r\n');
+      });
+    }
+
+    setEncoding() {}
+
+    write(data) {
+      const line = String(data).trim();
+      const space = line.indexOf(' ');
+      const tag = line.slice(0, space);
+      const command = line.slice(space + 1);
+      this.emit('data', taggedResponse(tag, command, scenario));
+    }
+
+    end() {}
+  }
+
+  const fakeNet = {
+    isIP: () => 1,
+    connect: () => new FakeSocket(),
+  };
+  const originalLoad = Module._load;
+  Module._load = function load(request, parent, isMain) {
+    if (request === 'net') return fakeNet;
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  const item = {
+    emailActionsMode: 'live',
+    emailAction: {
+      action: 'archive',
+      destinationMailbox: FAKE_DESTINATION,
+      reason: 'synthetic_failure',
+      approved: true,
+      mode: 'live',
+    },
+    credentialPair: {
+      id: 'synthetic-imap',
+      host: '127.0.0.1',
+      port: 1143,
+      ssl: false,
+      startTls: false,
+      allowUnauthorizedCerts: true,
+      userVar: 'IMAP_USER',
+      passwordVar: 'IMAP_PASSWORD',
+    },
+    sourceMailbox: 'INBOX',
+    uid: scenario === 'search' ? '' : '4242',
+    message_id: FAKE_MESSAGE_ID,
+  };
+  const input = { first: () => ({ json: item }) };
+  const vars = {
+    IMAP_USER: FAKE_USER,
+    IMAP_PASSWORD: FAKE_PASSWORD,
+  };
+
+  try {
+    await new AsyncFunction('$input', '$vars', code)(input, vars);
+    throw new Error(`Scenario ${scenario} unexpectedly succeeded`);
+  } catch (error) {
+    return String(error.message);
+  } finally {
+    Module._load = originalLoad;
+  }
+}
+
+(async () => {
+  const results = {};
+  for (const scenario of ['login', 'search', 'move']) {
+    results[scenario] = await runScenario(scenario);
+  }
+  console.log(JSON.stringify(results));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results = json.loads(completed.stdout)
+
+        self.assertEqual(results["login"], "IMAP LOGIN failed")
+        self.assertEqual(results["search"], "IMAP UID SEARCH failed")
+        self.assertEqual(results["move"], "IMAP UID MOVE failed")
+
+        for message in results.values():
+            self.assertNotIn("synthetic-user@example.test", message)
+            self.assertNotIn("synthetic-password-value", message)
+            self.assertNotIn("<synthetic-message-id-secret@example.test>", message)
+            self.assertNotIn("Synthetic Sensitive Destination", message)
+            self.assertNotIn('LOGIN "synthetic-user@example.test"', message)
+            self.assertNotIn(
+                'UID SEARCH HEADER Message-ID "<synthetic-message-id-secret@example.test>"',
+                message,
+            )
+            self.assertNotIn('UID MOVE 4242 "Synthetic Sensitive Destination"', message)
+
+    def test_execute_email_action_dry_run_reports_would_move(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Execute email action').parameters.jsCode;
+const item = {
+  emailActionsMode: 'dry_run',
+  emailAction: {
+    action: 'archive',
+    destinationMailbox: 'Archive',
+    reason: 'past_event',
+    approved: true,
+    mode: 'dry_run'
+  }
+};
+const input = { first: () => ({ json: item }) };
+
+(async () => {
+  const result = await new AsyncFunction('$input', code)(input);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["email_action_status"], "would_move")
+        self.assertEqual(result["email_action_destination"], "Archive")
+
+    def test_execute_email_action_omits_unsafe_fields_from_local_outcomes(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Execute email action').parameters.jsCode;
+
+async function run(item) {
+  const result = await new AsyncFunction('$input', code)({ first: () => ({ json: item }) });
+  return result[0].json;
+}
+
+const baseItem = {
+  uid: '4242',
+  message_id: '<synthetic-message@example.test>',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  sourceMailbox: 'INBOX',
+  email_body: 'private synthetic email body should not leave executor',
+  userPrompt: 'prompt containing private synthetic email body',
+  systemPrompt: 'full classifier system prompt',
+  api_key: 'sk-synthetic-secret',
+  imapPassword: 'synthetic-imap-password',
+  rawImapCommand: 'UID MOVE 4242 "Sensitive Destination"',
+  rawServerResponse: 'A0004 NO UID MOVE 4242 "Sensitive Destination" failed',
+  credentialPair: {
+    id: 'imap-1',
+    userVar: 'IMAP_USER',
+    passwordVar: 'IMAP_PASSWORD',
+  },
+};
+
+(async () => {
+  const dryRun = await run({
+    ...baseItem,
+    emailActionsMode: 'dry_run',
+    emailAction: {
+      action: 'archive',
+      destinationMailbox: 'Archive',
+      reason: 'past_event',
+      approved: true,
+      mode: 'dry_run',
+    },
+  });
+  const skipped = await run({
+    ...baseItem,
+    emailActionsMode: 'live',
+    emailAction: {
+      action: 'none',
+      destinationMailbox: '',
+      reason: 'no_action',
+      approved: false,
+      mode: 'live',
+    },
+  });
+  console.log(JSON.stringify({ dryRun, skipped }));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results = json.loads(completed.stdout)
+
+        for name, result in results.items():
+            with self.subTest(outcome=name):
+                serialized = json.dumps(result)
+                self.assertEqual(result["uid"], "4242")
+                self.assertEqual(result["message_id"], "<synthetic-message@example.test>")
+                self.assertEqual(result["sourceFlow"], "bulk")
+                self.assertEqual(result["sourceMailbox"], "INBOX")
+                self.assertIn("emailAction", result)
+                self.assertNotIn("email_body", result)
+                self.assertNotIn("userPrompt", result)
+                self.assertNotIn("systemPrompt", result)
+                self.assertNotIn("api_key", result)
+                self.assertNotIn("imapPassword", result)
+                self.assertNotIn("rawImapCommand", result)
+                self.assertNotIn("rawServerResponse", result)
+                self.assertNotIn("credentialPair", result)
+                self.assertNotIn("private synthetic email body", serialized)
+                self.assertNotIn("full classifier system prompt", serialized)
+                self.assertNotIn("sk-synthetic-secret", serialized)
+                self.assertNotIn("synthetic-imap-password", serialized)
+                self.assertNotIn('UID MOVE 4242 "Sensitive Destination"', serialized)
+                self.assertNotIn("A0004 NO UID MOVE", serialized)
+                self.assertNotIn("IMAP_PASSWORD", serialized)
+
+        self.assertEqual(results["dryRun"]["email_action_status"], "would_move")
+        self.assertEqual(results["dryRun"]["email_action_destination"], "Archive")
+        self.assertEqual(results["skipped"]["email_action_status"], "skipped_no_action")
+        self.assertEqual(results["skipped"]["email_action_destination"], "")
+
+    def run_execute_email_action_fake_imap(self, scenario):
+        script = r"""
+const fs = require('fs');
+const Module = require('module');
+const { EventEmitter } = require('events');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Execute email action').parameters.jsCode;
+const scenario = process.argv[1];
+const commands = [];
+const FAKE_DESTINATION = 'Archive';
+
+function taggedResponse(tag, command) {
+  commands.push(command);
+  if (command.startsWith('LOGIN ')) {
+    return `${tag} OK LOGIN completed\r\n`;
+  }
+  if (command.startsWith('LIST ')) {
+    if (scenario === 'missing') {
+      return `${tag} OK LIST completed\r\n`;
+    }
+    return `* LIST () "/" "${FAKE_DESTINATION}"\r\n${tag} OK LIST completed\r\n`;
+  }
+  if (command.startsWith('SELECT ')) {
+    return `${tag} OK [UIDNEXT 4243] SELECT completed\r\n`;
+  }
+  if (command.startsWith('UID MOVE ')) {
+    return `${tag} OK UID MOVE completed\r\n`;
+  }
+  if (command.startsWith('UID SEARCH ')) {
+    return `* SEARCH 4242\r\n${tag} OK UID SEARCH completed\r\n`;
+  }
+  if (command.startsWith('LOGOUT')) {
+    return `${tag} OK LOGOUT completed\r\n`;
+  }
+  return `${tag} BAD unexpected command\r\n`;
+}
+
+class FakeSocket extends EventEmitter {
+  constructor() {
+    super();
+    process.nextTick(() => {
+      this.emit('connect');
+      this.emit('data', '* OK synthetic IMAP server ready\r\n');
+    });
+  }
+
+  setEncoding() {}
+
+  write(data) {
+    const line = String(data).trim();
+    const space = line.indexOf(' ');
+    const tag = line.slice(0, space);
+    const command = line.slice(space + 1);
+    this.emit('data', taggedResponse(tag, command));
+  }
+
+  end() {}
+}
+
+const fakeNet = {
+  isIP: () => 1,
+  connect: () => new FakeSocket(),
+};
+const originalLoad = Module._load;
+Module._load = function load(request, parent, isMain) {
+  if (request === 'net') return fakeNet;
+  return originalLoad.call(this, request, parent, isMain);
+};
+
+const item = {
+  uid: '4242',
+  message_id: '<synthetic-message@example.test>',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  sourceMailbox: 'INBOX',
+  email_body: 'private synthetic email body should not leave executor',
+  userPrompt: 'prompt containing private synthetic email body',
+  systemPrompt: 'full classifier system prompt',
+  api_key: 'sk-synthetic-secret',
+  imapPassword: 'synthetic-imap-password',
+  rawImapCommand: 'UID MOVE 4242 "Archive"',
+  rawServerResponse: 'A0004 OK UID MOVE completed',
+  credentialPair: {
+    id: 'synthetic-imap',
+    host: '127.0.0.1',
+    port: 1143,
+    ssl: false,
+    startTls: false,
+    allowUnauthorizedCerts: true,
+    userVar: 'IMAP_USER',
+    passwordVar: 'IMAP_PASSWORD',
+  },
+  emailActionsMode: 'live',
+  emailAction: {
+    action: 'archive',
+    destinationMailbox: FAKE_DESTINATION,
+    reason: 'past_event',
+    approved: true,
+    mode: 'live',
+  },
+};
+const input = { first: () => ({ json: item }) };
+const vars = {
+  IMAP_USER: 'synthetic-user@example.test',
+  IMAP_PASSWORD: 'synthetic-password-value',
+};
+
+(async () => {
+  try {
+    const result = await new AsyncFunction('$input', '$vars', code)(input, vars);
+    console.log(JSON.stringify({ json: result[0].json, commands }));
+  } finally {
+    Module._load = originalLoad;
+  }
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script, scenario],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
+    def assert_execute_email_action_output_is_sanitized(self, result):
+        serialized = json.dumps(result)
+
+        self.assertNotIn("email_body", result)
+        self.assertNotIn("userPrompt", result)
+        self.assertNotIn("systemPrompt", result)
+        self.assertNotIn("api_key", result)
+        self.assertNotIn("imapPassword", result)
+        self.assertNotIn("rawImapCommand", result)
+        self.assertNotIn("rawServerResponse", result)
+        self.assertNotIn("credentialPair", result)
+        self.assertNotIn("private synthetic email body", serialized)
+        self.assertNotIn("full classifier system prompt", serialized)
+        self.assertNotIn("sk-synthetic-secret", serialized)
+        self.assertNotIn("synthetic-imap-password", serialized)
+        self.assertNotIn('UID MOVE 4242 "Archive"', serialized)
+        self.assertNotIn("A0004 OK UID MOVE", serialized)
+        self.assertNotIn("IMAP_PASSWORD", serialized)
+
+    def test_execute_email_action_missing_destination_skips_without_move(self):
+        result = self.run_execute_email_action_fake_imap("missing")
+
+        self.assertEqual(result["json"]["email_action_status"], "skipped_missing_mailbox")
+        self.assertEqual(result["json"]["email_action_destination"], "Archive")
+        self.assertEqual(result["json"]["email_action_error"], "destination_mailbox_missing")
+        self.assertNotIn('UID MOVE 4242 "Archive"', result["commands"])
+        self.assertFalse(
+            any(command.startswith("UID MOVE ") for command in result["commands"]),
+            result["commands"],
+        )
+        self.assert_execute_email_action_output_is_sanitized(result["json"])
+
+    def test_execute_email_action_live_success_moves_uid_and_reports_status(self):
+        result = self.run_execute_email_action_fake_imap("success")
+
+        self.assertIn('UID MOVE 4242 "Archive"', result["commands"])
+        self.assertEqual(result["json"]["email_action_status"], "moved")
+        self.assertEqual(result["json"]["email_action_destination"], "Archive")
+        self.assertEqual(result["json"]["source_action"], "archive")
+        self.assert_execute_email_action_output_is_sanitized(result["json"])
+
+    def test_plan_email_actions_moves_spam_like_to_spam(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Spam like", "confidence": 0.9}],
+            "actionHints": {},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "move_to_spam")
+        self.assertEqual(result["emailAction"]["destinationMailbox"], "Spam")
+        self.assertEqual(result["emailAction"]["reason"], "spam_like")
+        self.assertIs(result["emailAction"]["approved"], True)
+
+    def test_plan_email_actions_trashes_expired_two_factor_code(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "date": "Mon, 08 Jun 2026 10:00:00 +1000",
+            "labels": [{"label": "Important", "confidence": 0.8}],
+            "actionHints": {"two_factor_code": True},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "move_to_trash")
+        self.assertEqual(result["emailAction"]["destinationMailbox"], "Trash")
+        self.assertEqual(result["emailAction"]["reason"], "expired_two_factor_code")
+
+    def test_plan_email_actions_trashes_expired_account_security_two_factor_code(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "date": "Mon, 08 Jun 2026 10:00:00 +1000",
+            "labels": [{"label": "Account (security)", "confidence": 0.91}],
+            "actionHints": {"two_factor_code": True},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "move_to_trash")
+        self.assertEqual(result["emailAction"]["destinationMailbox"], "Trash")
+        self.assertEqual(result["emailAction"]["reason"], "expired_two_factor_code")
+
+    def test_plan_email_actions_keeps_recent_two_factor_code(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "date": "Tue, 09 Jun 2026 02:00:00 +1000",
+            "labels": [{"label": "Important", "confidence": 0.8}],
+            "actionHints": {"two_factor_code": True},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_archives_past_event_only(self):
+        past = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Schedule", "confidence": 0.91}],
+            "actionHints": {
+                "event_notice": True,
+                "event_time": "2026-06-09T08:00:00+10:00"
+            },
+        })
+        future = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Schedule", "confidence": 0.91}],
+            "actionHints": {
+                "event_notice": True,
+                "event_time": "2026-06-09T18:00:00+10:00"
+            },
+        })
+
+        self.assertEqual(past["emailAction"]["action"], "archive")
+        self.assertEqual(past["emailAction"]["destinationMailbox"], "Archive")
+        self.assertEqual(past["emailAction"]["reason"], "past_event")
+        self.assertEqual(future["emailAction"]["action"], "none")
+
+    def test_plan_email_actions_archives_successful_backup_only(self):
+        success = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+            "actionHints": {
+                "backup_job": True,
+                "backup_status": "success",
+                "has_errors": False
+            },
+        })
+        warning = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+            "actionHints": {
+                "backup_job": True,
+                "backup_status": "warning",
+                "has_errors": True
+            },
+        })
+
+        self.assertEqual(success["emailAction"]["action"], "archive")
+        self.assertEqual(success["emailAction"]["reason"], "successful_backup")
+        self.assertEqual(warning["emailAction"]["action"], "none")
+
+    def test_plan_email_actions_keeps_schedule_event_without_time(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Schedule", "confidence": 0.91}],
+            "actionHints": {
+                "event_notice": True,
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertEqual(result["emailAction"]["reason"], "invalid_event_time")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_impossible_calendar_event_time(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Schedule", "confidence": 0.91}],
+            "actionHints": {
+                "event_notice": True,
+                "event_time": "2026-02-31T12:00:00+10:00",
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertEqual(result["emailAction"]["reason"], "invalid_event_time")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_requires_label_confidence_threshold(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Spam like", "confidence": 0.01}],
+            "actionHints": {},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertEqual(result["emailAction"]["reason"], "no_accepted_labels")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_non_success_backup_statuses(self):
+        for status in ("failure", "warning", "partial", "error", "unknown"):
+            with self.subTest(status=status):
+                result = self.run_plan_email_actions({
+                    "emailActionsMode": "live",
+                    "actionNow": "2026-06-09T12:00:00+10:00",
+                    "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+                    "actionHints": {
+                        "backup_job": True,
+                        "backup_status": status,
+                        "has_errors": False,
+                    },
+                })
+
+                self.assertEqual(result["emailAction"]["action"], "none")
+                self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_backup_with_missing_has_errors(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+            "actionHints": {
+                "backup_job": True,
+                "backup_status": "success",
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_backup_with_malformed_has_errors(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+            "actionHints": {
+                "backup_job": True,
+                "backup_status": "success",
+                "has_errors": "false",
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_two_factor_with_invalid_email_dates(self):
+        for date_value in (
+            "Mon, 31 Feb 2026 12:00:00 +1000",
+            "Mon, 00 Jun 2026 12:00:00 +1000",
+            "Mon, 08 Bog 2026 12:00:00 +1000",
+        ):
+            with self.subTest(date=date_value):
+                result = self.run_plan_email_actions({
+                    "emailActionsMode": "live",
+                    "actionNow": "2026-06-09T12:00:00+10:00",
+                    "date": date_value,
+                    "labels": [{"label": "Important", "confidence": 0.8}],
+                    "actionHints": {"two_factor_code": True},
+                })
+
+                self.assertEqual(result["emailAction"]["action"], "none")
+                self.assertEqual(result["emailAction"]["reason"], "invalid_email_date")
+                self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_keeps_two_factor_with_invalid_direct_labels(self):
+        cases = {
+            "uncertain": [{"label": "uncertain", "confidence": 0}],
+            "unknown": [{"label": "Unknown label", "confidence": 0.99}],
+        }
+
+        for name, labels in cases.items():
+            with self.subTest(name=name):
+                result = self.run_plan_email_actions({
+                    "emailActionsMode": "live",
+                    "actionNow": "2026-06-09T12:00:00+10:00",
+                    "date": "Mon, 08 Jun 2026 10:00:00 +1000",
+                    "labels": labels,
+                    "actionHints": {"two_factor_code": True},
+                })
+
+                self.assertEqual(result["emailAction"]["action"], "none")
+                self.assertIs(result["emailAction"]["approved"], False)
+
+    def test_prepare_then_plan_keeps_schedule_events_without_valid_time(self):
+        cases = {
+            "omitted": {},
+            "null": {"event_time": None},
+            "natural_language": {
+                "event_time": "Wedding at Brunswick Town Hall, ask Alex for the private address",
+            },
+            "impossible_calendar": {"event_time": "2026-02-31T12:00:00+10:00"},
+        }
+
+        for name, event_hint in cases.items():
+            with self.subTest(name=name):
+                result = self.run_prepare_then_plan_email_actions({
+                    "labels": [{"label": "Schedule", "confidence": 0.91}],
+                    "action_hints": {
+                        "event_notice": True,
+                        **event_hint,
+                    },
+                    "reason": "Synthetic schedule classification",
+                })
+
+                self.assertIsNone(result["prepared"]["actionHints"]["event_time"])
+                self.assertEqual(result["planned"]["emailAction"]["action"], "none")
+                self.assertIs(result["planned"]["emailAction"]["approved"], False)
+
+    def test_prepare_then_plan_keeps_successful_backup_without_boolean_has_errors(self):
+        cases = {
+            "omitted": {},
+            "string_false": {"has_errors": "false"},
+        }
+
+        for name, error_hint in cases.items():
+            with self.subTest(name=name):
+                result = self.run_prepare_then_plan_email_actions({
+                    "labels": [{"label": "Infrastructure", "confidence": 0.91}],
+                    "action_hints": {
+                        "backup_job": True,
+                        "backup_status": "success",
+                        **error_hint,
+                    },
+                    "reason": "Synthetic backup classification",
+                })
+
+                self.assertIsNone(result["prepared"]["actionHints"]["has_errors"])
+                self.assertEqual(result["planned"]["emailAction"]["action"], "none")
+                self.assertIs(result["planned"]["emailAction"]["approved"], False)
+
+    def test_prepare_then_plan_keeps_two_factor_actions_without_accepted_labels(self):
+        cases = {
+            "uncertain": [{"label": "uncertain", "confidence": 0.5}],
+            "low_confidence_allowed": [{"label": "Important", "confidence": 0.5}],
+            "unknown_label": [{"label": "Totally Unknown", "confidence": 0.99}],
+        }
+
+        for name, labels in cases.items():
+            with self.subTest(name=name):
+                result = self.run_prepare_then_plan_email_actions(
+                    {
+                        "labels": labels,
+                        "action_hints": {
+                            "two_factor_code": True,
+                        },
+                        "reason": "Synthetic ambiguous two factor classification",
+                    },
+                    {"date": "Mon, 08 Jun 2026 10:00:00 +1000"},
+                )
+
+                self.assertEqual(result["prepared"]["labels"], [])
+                self.assertEqual(result["planned"]["emailAction"]["action"], "none")
+                self.assertIs(result["planned"]["emailAction"]["approved"], False)
+
+    def test_plan_email_actions_uses_spam_precedence(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "live",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "date": "Mon, 08 Jun 2026 10:00:00 +1000",
+            "labels": [
+                {"label": "Spam like", "confidence": 0.9},
+                {"label": "Schedule", "confidence": 0.9},
+                {"label": "Infrastructure", "confidence": 0.9}
+            ],
+            "actionHints": {
+                "two_factor_code": True,
+                "event_notice": True,
+                "event_time": "2026-06-09T08:00:00+10:00",
+                "backup_job": True,
+                "backup_status": "success",
+                "has_errors": False
+            },
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "move_to_spam")
+        self.assertEqual(result["emailAction"]["reason"], "spam_like")
+
+    def test_plan_email_actions_supports_disabled_mode(self):
+        result = self.run_plan_email_actions({
+            "emailActionsMode": "disabled",
+            "actionNow": "2026-06-09T12:00:00+10:00",
+            "labels": [{"label": "Spam like", "confidence": 0.9}],
+            "actionHints": {},
+        })
+
+        self.assertEqual(result["emailAction"]["action"], "none")
+        self.assertEqual(result["emailAction"]["reason"], "actions_disabled")
+        self.assertIs(result["emailAction"]["approved"], False)
 
     def test_workflow_does_not_use_execute_command_nodes(self):
         workflow = self.load_workflow()
@@ -842,6 +1828,40 @@ const input = { all: () => inputs };
         self.assertIn("category", value)
         self.assertIn("junk-like", value)
 
+    def test_system_prompt_requests_sanitized_action_hints(self):
+        assignments = self.build_prompt_assignments()
+        value = assignments["systemPrompt"]["value"]
+        schema_section = value.split("## Schema", 1)[1].split("## Rules", 1)[0]
+
+        self.assertEqual(value.count("<!-- action-hints:start -->"), 1)
+        self.assertEqual(value.count("<!-- action-hints:end -->"), 1)
+        self.assertIn('"action_hints": {', schema_section)
+        self.assertIn('"two_factor_code": false', schema_section)
+        self.assertIn('"event_notice": false', schema_section)
+        self.assertIn('"event_time": null', schema_section)
+        self.assertIn('"backup_job": false', schema_section)
+        self.assertIn('"backup_status": "unknown"', schema_section)
+        self.assertIn('"has_errors": false', schema_section)
+        self.assertIn("- `action_hints`:", schema_section)
+        self.assertNotIn('"reason": string\n}', schema_section)
+        self.assertNotIn("Also include an `action_hints` object", schema_section)
+        self.assertNotIn("must match output exactly", value)
+
+    def test_system_prompt_keeps_category_schema_with_action_hints(self):
+        schema_section = self.system_prompt_value().split("## Schema", 1)[1].split("## Rules", 1)[0]
+
+        self.assertIn('"category": { "name": string, "confidence": number }', schema_section)
+        self.assertIn('"reason": string,', schema_section)
+        self.assertIn('"action_hints": {', schema_section)
+        self.assertIn('"two_factor_code": boolean', schema_section)
+        self.assertNotIn('"labels": [', schema_section)
+
+    def test_system_prompt_marks_uncertain_as_fallback_only(self):
+        value = self.system_prompt_value()
+
+        self.assertIn("`category.name` must exactly match one allowed category, or be `uncertain`.", value)
+        self.assertIn('{"category":{"name":"uncertain","confidence":0.0}', value)
+
     def test_prepare_targets_accepts_schedule_and_spam_like_labels(self):
         script = r"""
 const fs = require('fs');
@@ -1030,6 +2050,258 @@ const dollar = () => ({
             self.assertEqual(result["labelMailboxes"], [])
             self.assertEqual(result["targetMailboxes"], ["Labels/Classified"])
             self.assertEqual(result["category"]["name"], "uncertain")
+
+    def test_prepare_targets_preserves_sanitized_action_hints(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '101',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [{ label: 'Infrastructure', confidence: 0.91 }],
+    action_hints: {
+      two_factor_code: false,
+      event_notice: true,
+      event_time: '2026-06-09T08:00:00+10:00',
+      backup_job: true,
+      backup_status: 'success',
+      has_errors: false,
+      ignored_extra_field: 'not copied'
+    },
+    reason: 'Successful backup notification for an infrastructure system'
+  })
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(
+            result["actionHints"],
+            {
+                "two_factor_code": False,
+                "event_notice": True,
+                "event_time": "2026-06-09T08:00:00+10:00",
+                "backup_job": True,
+                "backup_status": "success",
+                "has_errors": False,
+            },
+        )
+        self.assertNotIn("ignored_extra_field", result["actionHints"])
+        self.assertEqual(result["classification"]["action_hints"], result["actionHints"])
+
+    def test_prepare_targets_preserves_zulu_action_hint_event_time(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '104',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [{ label: 'Schedule', confidence: 0.9 }],
+    action_hints: {
+      event_notice: true,
+      event_time: '2026-06-09T08:00:00Z',
+    },
+    reason: 'Valid UTC event time should be preserved'
+  })
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["actionHints"]["event_time"], "2026-06-09T08:00:00Z")
+        self.assertEqual(
+            result["classification"]["action_hints"]["event_time"],
+            "2026-06-09T08:00:00Z",
+        )
+
+    def test_prepare_targets_drops_invalid_action_hint_event_time(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '102',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [{ label: 'Schedule', confidence: 0.9 }],
+    action_hints: {
+      event_notice: true,
+      event_time: 'Wedding at Brunswick Town Hall, ask Alex for the private address',
+    },
+    reason: 'Invitation with a natural-language event description'
+  })
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertIsNone(result["actionHints"]["event_time"])
+        self.assertIsNone(result["classification"]["action_hints"]["event_time"])
+
+    def test_prepare_targets_drops_impossible_calendar_action_hint_event_time(self):
+        script = r"""
+const fs = require('fs');
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
+const code = workflow.nodes.find((node) => node.name === 'Prepare Proton label targets').parameters.jsCode;
+const source = {
+  uid: '103',
+  sourceFlow: 'bulk',
+  runMode: 'apply_labels',
+  labelPrefix: 'Labels',
+  stateLabel: 'Classified',
+};
+const aiOutput = {
+  output: JSON.stringify({
+    labels: [{ label: 'Schedule', confidence: 0.9 }],
+    action_hints: {
+      event_notice: true,
+      event_time: '2026-02-31T12:00:00+10:00',
+    },
+    reason: 'Impossible calendar date should not be preserved'
+  })
+};
+const dollar = (name) => {
+  if (name !== 'Build classification prompt') throw new Error(`Unexpected node lookup: ${name}`);
+  return { item: { json: source } };
+};
+
+(async () => {
+  const result = await new AsyncFunction('$', '$json', code)(dollar, aiOutput);
+  console.log(JSON.stringify(result[0].json));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertIsNone(result["actionHints"]["event_time"])
+        self.assertIsNone(result["classification"]["action_hints"]["event_time"])
+
+    def test_action_hint_prompt_updater_repairs_and_is_idempotent(self):
+        updater = self.load_workflow_updater()
+        workflow = self.load_workflow()
+
+        assignments = {
+            assignment["name"]: assignment
+            for assignment in next(
+                node
+                for node in workflow["nodes"]
+                if node["name"] == "Build classification prompt"
+            )["parameters"]["assignments"]["assignments"]
+        }
+        assignments["systemPrompt"]["value"] = assignments["systemPrompt"]["value"].replace(
+            updater.ACTION_HINTS_SECTION,
+            '\n\n## Optional action hints\nAlso include an `action_hints` object without the canonical schema.\n',
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workflow_path = Path(tmpdir) / "workflow.json"
+            workflow_path.write_text(json.dumps(workflow, indent=2) + "\n", encoding="utf-8")
+
+            updater.update_workflow(workflow_path)
+            first_update = workflow_path.read_text(encoding="utf-8")
+            repaired = json.loads(first_update)
+            repaired_assignments = {
+                assignment["name"]: assignment
+                for assignment in next(
+                    node
+                    for node in repaired["nodes"]
+                    if node["name"] == "Build classification prompt"
+                )["parameters"]["assignments"]["assignments"]
+            }
+            repaired_prompt = repaired_assignments["systemPrompt"]["value"]
+
+            self.assertEqual(repaired_prompt.count(updater.ACTION_HINTS_START), 1)
+            self.assertEqual(repaired_prompt.count(updater.ACTION_HINTS_END), 1)
+            self.assertNotIn("without the canonical schema", repaired_prompt)
+
+            updater.update_workflow(workflow_path)
+            self.assertEqual(workflow_path.read_text(encoding="utf-8"), first_update)
 
     def test_ollama_model_uses_installed_name(self):
         nodes = self.nodes_by_name()
