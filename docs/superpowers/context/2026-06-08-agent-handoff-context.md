@@ -60,7 +60,7 @@ feature/workflow-telemetry-status
 origin/feature/workflow-telemetry-status
 ```
 
-That branch includes the step telemetry generator and a 103-node workflow export. The local main checkout currently has the smaller workflow export without generated step telemetry nodes. Do not overwrite the live workflow with local main until you confirm which workflow state should be authoritative.
+That branch includes the step telemetry generator and an older telemetry workflow export. As of 2026-06-10, local main now backs both live workflow targets directly: `workflow.json` / `workflow-imap-trigger.json` for production `Email Organiser` (`fm6pLPnZWsGfK1oH`) and `workflow-with-telemetry.json` for `Email Organiser (with telemetry)` (`bXNCHRxwqXoOeePH`). Do not import one export over the other live workflow ID.
 
 ## Directory Layout
 
@@ -303,8 +303,8 @@ Classification uses local Ollama:
 
 ```text
 base URL: http://192.168.1.100:11434
-model requested: gemma4-26b:4090
-model observed in workflow JSON: odytrice/gemma4-26b:4090
+model requested: igorls/gemma4-e4b-classifier:latest
+model observed in workflow JSON: igorls/gemma4-e4b-classifier:latest
 temperature: 0
 ```
 
@@ -803,6 +803,6 @@ Open or likely follow-up tasks from the session:
 
 - Import and retest the `Email Trigger (IMAP)` startup fix in live n8n.
 - Decide whether to merge the step telemetry branch into main.
-- Confirm live n8n still matches the telemetry workflow before importing any new local export.
+- Confirm the intended target ID before importing: production `fm6pLPnZWsGfK1oH` or telemetry `bXNCHRxwqXoOeePH`.
 - Investigate why n8n logs were not visible in Grafana/Loki while other services were.
 - Continue improving the status app only if the user asks after seeing the dashboard.

@@ -12,7 +12,7 @@ For the latest operational handoff, read `docs/superpowers/context/2026-06-08-ag
 - a backfill/manual bulk pass that fetches up to 50 unclassified IMAP emails at a time, loops over them one by one, and repeats until no unclassified emails remain;
 - an `Email Trigger (IMAP)` path that classifies one newly received email.
 
-Both paths use a visible n8n AI Agent node, `Classify with Ollama`, backed by an `Ollama Chat Model` node configured for `gemma4-26b:4090` at `http://192.168.1.100:11434`.
+Both paths use a visible n8n AI Agent node, `Classify with Ollama`, backed by an `Ollama Chat Model` node configured for `igorls/gemma4-e4b-classifier:latest` at `http://192.168.1.100:11434`.
 
 The latest verified live workflow from setup was imported and published, then left inactive. Local main and the step-telemetry branch differ; do not assume the local main export is the active live shape.
 

@@ -23,6 +23,15 @@ class WorkflowJsonTests(unittest.TestCase):
             "workflow-imap-trigger.json": self.load_workflow_path("workflow-imap-trigger.json"),
         }
 
+    def production_workflows(self):
+        return {
+            "workflow.json": self.load_workflow_path("workflow.json"),
+            "workflow-imap-trigger.json": self.load_workflow_path("workflow-imap-trigger.json"),
+        }
+
+    def telemetry_workflow(self):
+        return self.load_workflow_path("workflow-with-telemetry.json")
+
     def nodes_by_name_for(self, workflow):
         return {node["name"]: node for node in workflow["nodes"]}
 
@@ -170,6 +179,52 @@ const dollar = (name) => {
         ):
             self.assertEqual(nodes[name]["type"], "n8n-nodes-base.code")
             self.assertEqual(nodes[name]["parameters"]["language"], "javaScript")
+
+    def test_production_workflows_do_not_include_telemetry_nodes(self):
+        for workflow_name, workflow in self.production_workflows().items():
+            with self.subTest(workflow=workflow_name):
+                telemetry_nodes = [
+                    node["name"]
+                    for node in workflow["nodes"]
+                    if "telemetry" in node["name"].lower()
+                    or node["type"] == "n8n-nodes-base.postgres"
+                ]
+
+                self.assertEqual(telemetry_nodes, [])
+
+    def test_telemetry_workflow_is_backed_by_code(self):
+        workflow = self.telemetry_workflow()
+
+        self.assertEqual(workflow["name"], "Email Organiser (with telemetry)")
+        self.assertNotIn("id", workflow)
+        self.assertNotIn("active", workflow)
+
+        telemetry_nodes = [
+            node
+            for node in workflow["nodes"]
+            if "telemetry" in node["name"].lower()
+        ]
+        postgres_nodes = [
+            node
+            for node in workflow["nodes"]
+            if node["type"] == "n8n-nodes-base.postgres"
+        ]
+
+        self.assertGreaterEqual(len(telemetry_nodes), 70)
+        self.assertGreaterEqual(len(postgres_nodes), 20)
+        self.assertIn("Telemetry record step: Start run", {node["name"] for node in telemetry_nodes})
+        self.assertIn("Telemetry update step: Finish run", {node["name"] for node in telemetry_nodes})
+
+    def test_telemetry_workflow_records_duplicate_workflow_identity(self):
+        workflow = self.telemetry_workflow()
+        nodes = self.nodes_by_name_for(workflow)
+
+        for node_name in ("Telemetry start run", "Telemetry start run (trigger)"):
+            with self.subTest(node=node_name):
+                code = nodes[node_name]["parameters"]["jsCode"]
+                self.assertIn("const workflowId = 'bXNCHRxwqXoOeePH';", code)
+                self.assertIn("const workflowName = 'Email Organiser (with telemetry)';", code)
+                self.assertNotIn("const workflowId = 'fm6pLPnZWsGfK1oH';", code)
 
     def test_email_action_nodes_are_javascript_code_nodes(self):
         nodes = self.nodes_by_name()
@@ -1506,16 +1561,24 @@ const categories = [
         self.assertIn("progress.stage", code)
         self.assertIn("JSON.stringify(progress)", code)
 
+    def test_fetch_watchdog_returns_partial_batch_after_progress(self):
+        code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
+
+        self.assertIn("class FetchWatchdogExceeded", code)
+        self.assertIn("error instanceof FetchWatchdogExceeded && emails.length > 0", code)
+        self.assertIn("watchdog_partial_batch", code)
+
     def test_fetch_scans_source_by_bounded_uid_ranges_before_fetching_candidates(self):
         code = self.nodes_by_name()["Get next 50 unclassified emails"]["parameters"]["jsCode"]
 
         self.assertIn("uidNext", code)
         self.assertIn("searchUidRange", code)
         self.assertIn("uidSearchWindow", code)
-        self.assertIn("searchMessageId(stateMailbox", code)
+        self.assertIn("fetchMessageIds(stateMailbox", code)
+        self.assertIn("classifiedMessageIds.has(messageId)", code)
         self.assertIn("fetchHeadersForUids", code)
         self.assertNotIn("searchAll(sourceMailbox", code)
-        self.assertNotIn("fetchMessageIds(stateMailbox", code)
+        self.assertNotIn("searchMessageId(stateMailbox", code)
 
     def test_fetch_supports_optional_batch_limit_without_capping_manual_backfill(self):
         assignments = self.configure_assignments()
@@ -1604,28 +1667,19 @@ const input = {
         self.assertEqual(result["email_body"], result["cleanEmailText"])
         self.assertLessEqual(len(result["body_preview"]), 500)
 
-    def test_generate_embedding_node_uses_ollama_embed_without_returning_vector(self):
+    def test_generate_embedding_node_degrades_without_http_runtime(self):
+        code = self.nodes_by_name()["Generate email embedding"]["parameters"]["jsCode"]
+
+        self.assertNotIn("require('http')", code)
+        self.assertNotIn("require('https')", code)
+        self.assertNotIn("fetch(", code)
+
         script = r"""
 const fs = require('fs');
 const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
 const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
 const code = workflow.nodes.find((node) => node.name === 'Generate email embedding').parameters.jsCode;
-globalThis.fetch = async (url, options) => {
-  const payload = JSON.parse(options.body);
-  if (!String(url).endsWith('/api/embed')) throw new Error(`Unexpected URL: ${url}`);
-  if (payload.input !== 'A clean email') throw new Error(`Unexpected input: ${payload.input}`);
-  return {
-    ok: true,
-    status: 200,
-    text: async () => 'ok',
-    json: async () => ({
-      model: payload.model,
-      embeddings: [[0.1, 0.2, 0.3]],
-      prompt_eval_count: 7,
-      total_duration: 12000000,
-    }),
-  };
-};
+delete globalThis.fetch;
 const input = {
   all: () => [{
     json: {
@@ -1653,34 +1707,26 @@ const input = {
         )
         result = json.loads(completed.stdout)
 
-        self.assertEqual(result["emailEmbedding"]["status"], "ok")
+        self.assertEqual(result["emailEmbedding"]["status"], "disabled_in_code_node_runtime")
         self.assertEqual(result["emailEmbedding"]["model"], "embeddinggemma")
-        self.assertEqual(result["emailEmbedding"]["dimensions"], 3)
-        self.assertEqual(result["emailEmbedding"]["promptEvalCount"], 7)
-        self.assertEqual(result["emailEmbedding"]["totalDuration"], 12000000)
+        self.assertEqual(result["emailEmbedding"]["dimensions"], 0)
+        self.assertIn("HTTP Request node", result["emailEmbedding"]["reason"])
+        self.assertEqual(result["cleanEmailText"], "A clean email")
         self.assertNotIn("embedding", result)
         self.assertNotIn("embeddings", result)
         self.assertNotIn("embeddingVector", result)
 
-    def test_generate_embedding_http_error_redacts_response_body(self):
+    def test_generate_embedding_node_skips_empty_input(self):
         script = r"""
 const fs = require('fs');
 const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
 const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
 const code = workflow.nodes.find((node) => node.name === 'Generate email embedding').parameters.jsCode;
-const privateLookingInput = 'PRIVATE_INPUT_SHOULD_NOT_LEAK sender@example.test subject body';
-globalThis.fetch = async () => ({
-  ok: false,
-  status: 500,
-  text: async () => `server echoed ${privateLookingInput}`,
-  json: async () => {
-    throw new Error('json should not be read for failed responses');
-  },
-});
+delete globalThis.fetch;
 const input = {
   all: () => [{
     json: {
-      cleanEmailText: privateLookingInput,
+      cleanEmailText: '   ',
       embeddingModel: 'embeddinggemma',
       embeddingBaseUrl: 'http://ollama.test:11434',
     },
@@ -1688,10 +1734,11 @@ const input = {
 };
 
 (async () => {
-  await new AsyncFunction('$input', code)(input);
-  throw new Error('Expected embedding request to fail');
+  const result = await new AsyncFunction('$input', code)(input);
+  console.log(JSON.stringify(result[0].json));
 })().catch((error) => {
-  console.log(JSON.stringify({ message: error.message }));
+  console.error(error);
+  process.exit(1);
 });
 """
         completed = subprocess.run(
@@ -1703,56 +1750,9 @@ const input = {
         )
         result = json.loads(completed.stdout)
 
-        self.assertIn("Ollama embedding request failed with HTTP 500", result["message"])
-        self.assertNotIn("server echoed", result["message"])
-        self.assertNotIn("PRIVATE_INPUT_SHOULD_NOT_LEAK", result["message"])
-        self.assertNotIn("sender@example.test", result["message"])
-
-    def test_generate_embedding_json_parse_error_redacts_parser_message(self):
-        script = r"""
-const fs = require('fs');
-const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
-const workflow = JSON.parse(fs.readFileSync('workflow.json', 'utf8'));
-const code = workflow.nodes.find((node) => node.name === 'Generate email embedding').parameters.jsCode;
-const privateLookingInput = 'PRIVATE_JSON_PARSE_INPUT_SHOULD_NOT_LEAK sender@example.test subject body';
-globalThis.fetch = async () => ({
-  ok: true,
-  status: 200,
-  json: async () => {
-    throw new Error(`Unexpected token near ${privateLookingInput}`);
-  },
-});
-const input = {
-  all: () => [{
-    json: {
-      cleanEmailText: privateLookingInput,
-      embeddingModel: 'embeddinggemma',
-      embeddingBaseUrl: 'http://ollama.test:11434',
-    },
-  }],
-};
-
-(async () => {
-  await new AsyncFunction('$input', code)(input);
-  throw new Error('Expected embedding JSON parsing to fail');
-})().catch((error) => {
-  console.log(JSON.stringify({ message: error.message }));
-});
-"""
-        completed = subprocess.run(
-            ["node", "-e", script],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        result = json.loads(completed.stdout)
-
-        self.assertIn("Ollama embedding response was not valid JSON", result["message"])
-        self.assertIn("HTTP 200", result["message"])
-        self.assertNotIn("Unexpected token", result["message"])
-        self.assertNotIn("PRIVATE_JSON_PARSE_INPUT_SHOULD_NOT_LEAK", result["message"])
-        self.assertNotIn("sender@example.test", result["message"])
+        self.assertEqual(result["emailEmbedding"]["status"], "skipped_empty_input")
+        self.assertEqual(result["emailEmbedding"]["dimensions"], 0)
+        self.assertNotIn("embedding", result)
 
     def test_user_prompt_uses_clean_text_and_bounded_embedding_metadata(self):
         assignments = self.build_prompt_assignments()
@@ -2304,12 +2304,19 @@ const dollar = (name) => {
             self.assertEqual(workflow_path.read_text(encoding="utf-8"), first_update)
 
     def test_ollama_model_uses_installed_name(self):
-        nodes = self.nodes_by_name()
+        workflows = {
+            "workflow.json": self.load_workflow_path("workflow.json"),
+            "workflow-imap-trigger.json": self.load_workflow_path("workflow-imap-trigger.json"),
+            "workflow-with-telemetry.json": self.load_workflow_path("workflow-with-telemetry.json"),
+        }
 
-        self.assertEqual(
-            nodes["Ollama Chat Model"]["parameters"]["model"],
-            "odytrice/gemma4-26b:4090",
-        )
+        for workflow_name, workflow in workflows.items():
+            with self.subTest(workflow=workflow_name):
+                nodes = self.nodes_by_name_for(workflow)
+                self.assertEqual(
+                    nodes["Ollama Chat Model"]["parameters"]["model"],
+                    "igorls/gemma4-e4b-classifier:latest",
+                )
 
     def test_workflow_stops_on_model_errors_during_setup(self):
         node = self.nodes_by_name()["Classify with Ollama"]

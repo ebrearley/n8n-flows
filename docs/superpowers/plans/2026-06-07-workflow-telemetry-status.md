@@ -1210,7 +1210,7 @@ console.log(JSON.stringify({
   mailbox: source.sourceMailbox,
   message_id: source.message_id,
   subject: source.email_subject,
-  model: 'odytrice/gemma4-26b:4090',
+  model: 'igorls/gemma4-e4b-classifier:latest',
 }));
 
 return [{
@@ -1223,7 +1223,7 @@ return [{
       source.sourceMailbox || 'INBOX',
       String(source.uidvalidity || ''),
       String(source.uid || ''),
-      'odytrice/gemma4-26b:4090',
+      'igorls/gemma4-e4b-classifier:latest',
       prompt,
       rawResponse,
       parsed,
@@ -1483,7 +1483,7 @@ def test_telemetry_records_ai_model_tokens_and_label_actions(self):
     self.assertIn("classification_attempts", text)
     self.assertIn("label_actions", text)
     self.assertIn("estimated_prompt_tokens", text)
-    self.assertIn("odytrice/gemma4-26b:4090", text)
+    self.assertIn("igorls/gemma4-e4b-classifier:latest", text)
 ```
 
 - [ ] **Step 9: Sync, verify, and commit**
