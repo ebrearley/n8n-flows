@@ -569,11 +569,20 @@ function chunked(values, size) {
   return chunks;
 }
 
+class FetchWatchdogExceeded extends Error {
+  constructor(elapsedMs, progress) {
+    super(`Fetch watchdog exceeded after ${elapsedMs}ms: ${JSON.stringify(progress)}`);
+    this.name = 'FetchWatchdogExceeded';
+    this.elapsedMs = elapsedMs;
+    this.progress = { ...progress };
+  }
+}
+
 function assertFetchWithinWatchdog(startedAt, fetchWatchdogMs, progress) {
   if (fetchWatchdogMs <= 0) return;
   const elapsedMs = Date.now() - startedAt;
   if (elapsedMs > fetchWatchdogMs) {
-    throw new Error(`Fetch watchdog exceeded after ${elapsedMs}ms: ${JSON.stringify(progress)}`);
+    throw new FetchWatchdogExceeded(elapsedMs, progress);
   }
 }
 
@@ -651,9 +660,12 @@ if (defaults.maxBatches > 0 && runIndex >= defaults.maxBatches) {
 const credentialPairs = credentialPairsFromConfig(inputConfig, defaults);
 const emails = [];
 const warnings = [];
+let stopFetching = false;
+let stoppedReason = 'inbox_fully_classified';
 
 for (const pair of credentialPairs) {
   if (emails.length >= defaults.batchLimit) break;
+  if (stopFetching) break;
   const fetchStartedAt = Date.now();
   const progress = {
     stage: 'credential_pair_start',
@@ -697,6 +709,14 @@ for (const pair of credentialPairs) {
     if (!stateMailboxExists) {
       warnings.push(`State mailbox not found during dry-run for credential pair ${pair.id}: ${stateMailbox}`);
     }
+
+    markProgress('load_classified_message_ids');
+    const classifiedMessageIds = stateMailboxExists
+      ? await client.fetchMessageIds(stateMailbox)
+      : new Set();
+    markProgress('classified_message_ids_loaded', {
+      classifiedUidCount: classifiedMessageIds.size,
+    });
 
     for (const sourceMailbox of pair.sourceMailboxes) {
       if (emails.length >= defaults.batchLimit) break;
@@ -742,10 +762,7 @@ for (const pair of credentialPairs) {
             const rawHeaders = headersByUid.get(String(uid)) || await client.fetchHeaders(uid, sourceMailbox);
             const headers = parseHeaders(rawHeaders);
             const messageId = headers['message-id'] || '';
-            if (stateMailboxExists && messageId) {
-              const matches = await client.searchMessageId(stateMailbox, messageId);
-              if (matches.length > 0) continue;
-            }
+            if (messageId && classifiedMessageIds.has(messageId)) continue;
 
             markProgress('fetch_candidate_body', {
               sourceMailbox,
@@ -765,7 +782,15 @@ for (const pair of credentialPairs) {
       }
     }
   } catch (error) {
-    throw withProgressError(error, progress);
+    if (error instanceof FetchWatchdogExceeded && emails.length > 0) {
+      warnings.push(
+        `Fetch watchdog returned partial batch after ${error.elapsedMs}ms at ${error.progress.stage}`,
+      );
+      stoppedReason = 'watchdog_partial_batch';
+      stopFetching = true;
+    } else {
+      throw withProgressError(error, progress);
+    }
   } finally {
     await client.logout().catch(() => {});
   }
@@ -776,6 +801,8 @@ return [{
     emails,
     warnings,
     total_emails: emails.length,
-    stopped_reason: emails.length ? 'batch_ready' : 'inbox_fully_classified',
+    stopped_reason: emails.length
+      ? stoppedReason === 'watchdog_partial_batch' ? stoppedReason : 'batch_ready'
+      : 'inbox_fully_classified',
   },
 }];

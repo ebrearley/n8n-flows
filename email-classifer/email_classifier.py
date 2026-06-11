@@ -488,7 +488,7 @@ def classify_with_ollama(
     prompt_settings: dict[str, str],
 ) -> dict[str, Any]:
     base_url = os.getenv("OLLAMA_BASE_URL", "http://192.168.1.100:11434").rstrip("/")
-    model = os.getenv("OLLAMA_MODEL", "gemma4-26b:4090")
+    model = os.getenv("OLLAMA_MODEL", "igorls/gemma4-e4b-classifier:latest")
     timeout = env_int("OLLAMA_TIMEOUT_SECONDS", 120)
     keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "-1")
 

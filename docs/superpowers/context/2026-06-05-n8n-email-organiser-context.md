@@ -6,13 +6,13 @@ Repository: `https://github.com/ebrearley/n8n-flows`
 
 ## Current Revision
 
-For the newest cross-repo handoff, read `docs/superpowers/context/2026-06-08-agent-handoff-context.md` and root `AGENTS.md`.
+For the newest cross-repo handoff, read `docs/superpowers/context/2026-06-10-email-organiser-workflow-split.md`, `docs/superpowers/context/2026-06-08-agent-handoff-context.md`, and root `AGENTS.md`.
 
 `Email Organiser` (`fm6pLPnZWsGfK1oH`) is the n8n workflow for Proton IMAP email classification. It has a visible batch loop, visible Ollama AI classification node, raw JSON parsing in Proton label target preparation, an empty-batch stop guard, and JavaScript Code-node paths for IMAP fetch, label application, and post-label action planning/execution.
 
 The latest verified live n8n workflow from the setup session was imported and published, then left inactive. `Configure Proton IMAP batch` sets `maxBatches=0` for full backfill, so a backfill/manual execution keeps fetching 50-email batches until no unclassified emails remain.
 
-Important repository split as of 2026-06-08: local main has the smaller non-step-telemetry export, while `feature/workflow-telemetry-status` and `.worktrees/workflow-telemetry-status` contain the 103-node step-telemetry workflow used for the last live validation.
+Important repository split as of 2026-06-10: `workflow.json` and `workflow-imap-trigger.json` back the telemetry-free production workflow `Email Organiser` (`fm6pLPnZWsGfK1oH`), while `workflow-with-telemetry.json` backs the iteration/status workflow `Email Organiser (with telemetry)` (`bXNCHRxwqXoOeePH`).
 
 The bulk fetch path avoids full mailbox and classified-message preloads. It scans source mailboxes by bounded UID ranges (`uidSearchWindow=500`), verifies candidate `Message-ID`s against `Labels/Classified` as needed, requests only selected IMAP header fields, and caps each raw email preview at `rawFetchByteLimit=65536` bytes. `fetchWatchdogMs=120000` stops the first batch fetch with stage counters if it stalls.
 
@@ -82,7 +82,7 @@ Email Trigger (IMAP)
 - Node: `Ollama Chat Model`
 - Agent: `Classify with Ollama`
 - Base URL: `http://192.168.1.100:11434`
-- Model: `gemma4-26b:4090`
+- Model: `igorls/gemma4-e4b-classifier:latest`
 
 The Python helper is retained only as legacy local test coverage. The current workflow performs IMAP fetch, label application, and post-label action planning/execution inside n8n JavaScript Code nodes, and n8n performs classification through the visible AI node.
 
@@ -131,7 +131,7 @@ No `enabled_tools` allow-list is configured, so Codex should expose all tools ad
 - Replace placeholder values for `IMAP_1_USER`, `IMAP_1_PASSWORD`, `IMAP_2_USER`, and `IMAP_2_PASSWORD`; update host/port variables if either endpoint differs; add more pairs and variables if needed.
 - If using Coolify runtime env vars rather than n8n variables, explicitly approve `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
 - Confirm all Proton labels exist under `Labels`, including `Labels/Classified`.
-- Confirm whether the live workflow should remain the step-telemetry export before importing local main.
+- Keep the production and telemetry workflow IDs separate when importing from code.
 - Retest the `Email Trigger (IMAP)` startup issue after import. Current local main sets `trackLastMessageId=false` and routes trigger mail through `Skip classified trigger email`.
 - Keep `maxBatches=0` for full manual backfill; set it to a positive number only for deliberately capped test runs.
 - Keep `rawFetchByteLimit=65536` unless larger email body previews are needed for classification.

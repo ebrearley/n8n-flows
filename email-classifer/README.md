@@ -8,6 +8,7 @@ The directory name intentionally matches the requested spelling: `email-classife
 
 - `workflow.json`: importable n8n workflow JSON for the bulk and trigger workflow.
 - `workflow-imap-trigger.json`: equivalent export retained for compatibility.
+- `workflow-with-telemetry.json`: importable telemetry/iteration workflow for `Email Organiser (with telemetry)`.
 - `code-nodes/`: JavaScript used by the n8n Code nodes for IMAP fetch, label application, and post-label action planning/execution.
 - `email_classifier.py`: legacy Python helper retained for unit-tested behavior references.
 - `tests/`: unit tests for classifier helper behavior.
@@ -50,7 +51,7 @@ Email Trigger (IMAP)
   -> Execute email action (trigger)
 ```
 
-Classification happens in the visible n8n AI Agent node `Classify with Ollama`, backed by the `Ollama Chat Model` node using `gemma4-26b:4090` at `http://192.168.1.100:11434`.
+Classification happens in the visible n8n AI Agent node `Classify with Ollama`, backed by the `Ollama Chat Model` node using `igorls/gemma4-e4b-classifier:latest` at `http://192.168.1.100:11434`.
 
 The current workflow uses n8n JavaScript Code nodes for IMAP fetch, label application, and post-label action planning/execution. The Python helper is retained as legacy local test coverage only.
 
@@ -68,13 +69,13 @@ https://n8n-workflow-status.home.brearley.net
 
 The status app reads the separate `workflow_status` Postgres database and displays workflow runs, current step, step input/output/error JSON, AI model/token usage, label actions, and errors.
 
-Important state split:
+Current live/code split:
 
-- local main currently has the smaller workflow export without generated step telemetry nodes;
-- `feature/workflow-telemetry-status` and `.worktrees/workflow-telemetry-status` contain the 103-node step telemetry workflow;
-- the last live n8n validation used the telemetry workflow and left it inactive.
+- `Email Organiser` (`fm6pLPnZWsGfK1oH`) is the production workflow. It is backed by `workflow.json` / `workflow-imap-trigger.json`, is telemetry-free, and is intended to run normally.
+- `Email Organiser (with telemetry)` (`bXNCHRxwqXoOeePH`) is the iteration/status workflow. It is backed by `workflow-with-telemetry.json`, writes to `workflow_status`, and is the workflow to run when feeding the status dashboard.
+- the telemetry workflow is normally kept inactive unless deliberately running a validation/backfill for dashboard visibility.
 
-Do not import the smaller local main export over live n8n unless the user confirms step telemetry can be removed.
+Do not import one export over the other workflow ID. The production workflow should stay telemetry-free; the telemetry workflow should keep its Postgres/step telemetry nodes.
 
 ## Proton Labels
 
@@ -159,15 +160,21 @@ EMAIL_CLASSIFIER_STATE_LABEL=Classified
 
 ## Import
 
-Import the workflow JSON into n8n:
+Import the production workflow JSON into n8n:
 
 ```bash
 n8n import:workflow --input=email-classifer/workflow.json
 ```
 
+Import the telemetry workflow JSON only when updating `Email Organiser (with telemetry)`:
+
+```bash
+n8n import:workflow --input=email-classifer/workflow-with-telemetry.json
+```
+
 Assign the IMAP credential to `Email Trigger (IMAP)` and configure the Ollama account/endpoint on `Ollama Chat Model` if n8n asks for it.
 
-For the live n8n instance, use the safer import procedure in root `AGENTS.md`: inject the workflow ID and credential references into a temporary import JSON, import with `active=false`, publish, leave inactive until ready, then restart n8n.
+For the live n8n instance, use the safer import procedure in root `AGENTS.md`: inject the correct workflow ID and credential references into a temporary import JSON, import with `active=false`, publish, set production active and telemetry inactive unless intentionally testing, then restart n8n.
 
 Avoid pasting `n8n execute` output into chat or docs. The CLI can print private email content even without `--rawOutput`; validate through sanitized `workflow_status` rows instead.
 

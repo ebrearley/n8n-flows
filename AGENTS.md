@@ -36,15 +36,16 @@ Important files:
 - `docs/superpowers/specs/`: design notes.
 - `docs/superpowers/plans/`: implementation plans and verification records.
 
-## Current Branch And Divergence
+## Workflow Code Split
 
-As of 2026-06-08, the main checkout had uncommitted workflow and docs changes and was ahead of `origin/main`:
+As of 2026-06-10, this repo backs two live n8n workflows:
 
-```text
-main...origin/main [ahead 3]
-```
+- production: `email-classifer/workflow.json` and `workflow-imap-trigger.json` import to `Email Organiser` (`fm6pLPnZWsGfK1oH`);
+- telemetry/iteration: `email-classifer/workflow-with-telemetry.json` imports to `Email Organiser (with telemetry)` (`bXNCHRxwqXoOeePH`).
 
-The local main workflow export had the smaller non-step-telemetry graph, about 17 nodes.
+The production workflow is the one intended to run normally against mail. It must stay free of generated telemetry/Postgres nodes.
+
+The telemetry workflow is the one to run when iterating the workflow and feeding `n8n-workflow-status`. It writes to `workflow_status` and its telemetry start nodes must identify the duplicate workflow ID/name, not the production workflow.
 
 A local worktree and branch also exist:
 
@@ -54,7 +55,7 @@ feature/workflow-telemetry-status
 origin/feature/workflow-telemetry-status
 ```
 
-That branch contains generated step telemetry around the email organiser workflow and has a 103-node export. Relevant commits include:
+That historical branch contains generated step telemetry around the email organiser workflow. It may not include the latest production workflow changes. Relevant commits include:
 
 - `8a51cda feat: add step telemetry helpers`
 - `ddf8fe1 fix: preserve payload through step telemetry`
@@ -64,13 +65,7 @@ That branch contains generated step telemetry around the email organiser workflo
 - `c3c71d3 fix: align step telemetry with design review`
 - `bc83388 fix: harden generated step telemetry`
 
-The last live n8n validation used the telemetry workflow shape, not the smaller local main export. If you are about to import a workflow, first confirm which state the user wants:
-
-- local main without step telemetry;
-- the `feature/workflow-telemetry-status` branch;
-- a fresh export from live n8n.
-
-Do not silently overwrite live n8n with the smaller local main export if the status dashboard still expects `workflow_steps` rows.
+Do not import the telemetry export over `Email Organiser`, and do not import the production export over `Email Organiser (with telemetry)`.
 
 ## Live n8n Context
 
@@ -84,8 +79,10 @@ Do not silently overwrite live n8n with the smaller local main export if the sta
 - n8n container: `n8n-ew4sow0ws8kggowogk4owk4c`
 - n8n Postgres container: `postgresql-ew4sow0ws8kggowogk4owk4c`
 - Observed n8n version: `2.23.4`
-- Workflow ID: `fm6pLPnZWsGfK1oH`
-- Workflow name: `Email Organiser`
+- Production workflow ID: `fm6pLPnZWsGfK1oH`
+- Production workflow name: `Email Organiser`
+- Telemetry workflow ID: `bXNCHRxwqXoOeePH`
+- Telemetry workflow name: `Email Organiser (with telemetry)`
 - Project ID for import: `VYxWLhVfItgsWnnA`
 
 Expected DNS/network behavior:
@@ -103,16 +100,14 @@ Live credential references that may need to be injected into workflow JSON befor
 
 These IDs are not secrets. Do not document or print credential values.
 
-Latest verified live state from the step-telemetry work:
+Latest verified live state on 2026-06-10:
 
-- workflow imported and published;
-- workflow then left inactive;
-- full workflow export contained 103 nodes;
-- `Configure Proton IMAP batch` had `batchLimit=50`;
-- `Configure Proton IMAP batch` had `maxBatches=0`;
-- one capped validation run used `batchLimit=1` and `maxBatches=1`;
-- capped validation processed one email and recorded sanitized telemetry rows;
-- no private email content should be quoted from that run.
+- `Email Organiser` (`fm6pLPnZWsGfK1oH`) was imported from production code, published, restarted into effect, and left active;
+- production live metadata: `nodeCount=22`, `triggerCount=2`, `telemetryLikeCount=0`;
+- `Email Organiser (with telemetry)` (`bXNCHRxwqXoOeePH`) was imported from telemetry code, published, restarted into effect, and left inactive;
+- telemetry live metadata: `nodeCount=92`, `triggerCount=2`, `telemetryLikeCount=73`;
+- telemetry start nodes were verified to write workflow ID `bXNCHRxwqXoOeePH` and workflow name `Email Organiser (with telemetry)`;
+- no workflow execution output or private email content was read.
 
 ## n8n MCP Context
 
@@ -244,7 +239,7 @@ Write-capable or execution-capable tools include `execute_workflow`, `test_workf
 
 ### MCP Update Caveats
 
-MCP `update_workflow` operates on the live n8n draft workflow, not on the local `email-classifer/workflow.json` checked out in this repo. This matters because live n8n may contain the 103-node step-telemetry workflow while local `main` may contain the smaller non-telemetry export. Always call `get_workflow_details` first and confirm `nodeCount`, `active`, and the target node names/positions before applying an update.
+MCP `update_workflow` operates on the live n8n draft workflow, not on local files. This matters because `Email Organiser` (`fm6pLPnZWsGfK1oH`) and `Email Organiser (with telemetry)` (`bXNCHRxwqXoOeePH`) are separate live workflows with different node graphs. Always call `get_workflow_details` first and confirm `id`, `name`, `nodeCount`, `active`, and the target node names/positions before applying an update.
 
 Observed live read on 2026-06-08:
 
@@ -285,7 +280,7 @@ Node 'Email Trigger (IMAP)' is not connected to any input. It will not receive d
 
 is expected for an n8n trigger node. Trigger nodes do not receive input from upstream nodes. Do not treat this warning as evidence that the IMAP trigger is broken.
 
-`Email Organiser` MCP visibility verified on 2026-06-08:
+Historical `Email Organiser` MCP visibility verified on 2026-06-08, before the production/telemetry split:
 
 - workflow ID: `fm6pLPnZWsGfK1oH`
 - name: `Email Organiser`
@@ -325,7 +320,7 @@ Use the API key through the `X-N8N-API-KEY` header and do not print the key:
 if [ -n "$N8N_API_ACCESS_KEY" ]; then printf 'N8N_API_ACCESS_KEY is set\n'; else printf 'N8N_API_ACCESS_KEY is not set\n'; fi
 ```
 
-Read workflow metadata:
+Read production workflow metadata:
 
 ```bash
 curl -sS \
@@ -334,22 +329,30 @@ curl -sS \
   https://n8n.home.ericbrearley.com/api/v1/workflows/fm6pLPnZWsGfK1oH
 ```
 
+Read telemetry workflow metadata:
+
+```bash
+curl -sS \
+  -H "X-N8N-API-KEY: $N8N_API_ACCESS_KEY" \
+  -H 'accept: application/json' \
+  https://n8n.home.ericbrearley.com/api/v1/workflows/bXNCHRxwqXoOeePH
+```
+
 This returns the workflow graph. Do not print the full response unless the user explicitly needs it and it has been checked for sensitive data. For normal diagnostics, reduce it to metadata such as workflow ID, name, active state, node count, trigger count, updated time, and settings keys.
 
-Safe write-path verification for an already-inactive workflow:
+Safe write-path verification is only safe against a workflow that is already inactive. As of 2026-06-10, that is the telemetry workflow, not production:
 
 ```bash
 curl -sS -X POST \
   -H "X-N8N-API-KEY: $N8N_API_ACCESS_KEY" \
   -H 'accept: application/json' \
-  https://n8n.home.ericbrearley.com/api/v1/workflows/fm6pLPnZWsGfK1oH/deactivate
+  https://n8n.home.ericbrearley.com/api/v1/workflows/bXNCHRxwqXoOeePH/deactivate
 ```
 
-This was verified on 2026-06-09 against `Email Organiser`:
+Current verified read-only metadata on 2026-06-10:
 
-- API read `GET /api/v1/workflows/fm6pLPnZWsGfK1oH` succeeded;
-- API write `POST /api/v1/workflows/fm6pLPnZWsGfK1oH/deactivate` succeeded while the workflow was already inactive;
-- final API read confirmed the workflow stayed inactive with 103 nodes and 2 triggers;
+- `Email Organiser` returned `active=true`, `nodeCount=22`, and no telemetry nodes;
+- `Email Organiser (with telemetry)` returned `active=false`, `nodeCount=92`, and 73 telemetry-like nodes;
 - no private email execution data was read or printed.
 
 Current n8n public API docs show workflow updates use `PUT /workflows/{id}` with required fields `name`, `nodes`, `connections`, and `settings`, while `active`, `id`, `createdAt`, `updatedAt`, and `tags` are read-only. Manage active state separately with activate/deactivate endpoints. Be careful with full-workflow `PUT`: live exports may include settings such as `availableInMCP` that the public API schema can reject, and graph updates can affect the live draft. Prefer MCP `update_workflow` or the established import flow for workflow graph changes unless you have first sanitized and validated the public API payload.
@@ -440,8 +443,8 @@ Ollama endpoint:
 
 - LAN host: `192.168.1.100`
 - base URL: `http://192.168.1.100:11434`
-- local model requested by the user: `gemma4-26b:4090`
-- workflow model value observed in JSON: `odytrice/gemma4-26b:4090`
+- local model requested by the user: `igorls/gemma4-e4b-classifier:latest`
+- workflow model value observed in JSON: `igorls/gemma4-e4b-classifier:latest`
 - temperature: `0`
 
 Classification is done by the visible n8n AI Agent node:
@@ -624,28 +627,32 @@ Before importing, make a copy of the intended workflow JSON and inject live IDs/
 
 Known successful import pattern:
 
-1. Set the workflow JSON `id` to `fm6pLPnZWsGfK1oH`.
-2. Set `active` to `false` in the import JSON.
-3. Inject credential references:
+1. Choose the source and target:
+   - production: `email-classifer/workflow.json` -> `fm6pLPnZWsGfK1oH`;
+   - telemetry: `email-classifer/workflow-with-telemetry.json` -> `bXNCHRxwqXoOeePH`.
+2. Set the workflow JSON `id` to the chosen live workflow ID.
+3. Set `active` to `false` in the import JSON.
+4. Inject credential references:
    - `Email Trigger (IMAP)` gets IMAP credential id `8dnbMcRYZzmpdI9B`, name `eric@brearley.net`.
    - `Ollama Chat Model` gets Ollama credential id `aR1KuRnGv6tTTkQ8`, name `Ollama account`.
-   - all Postgres telemetry nodes get credential id `wspg_a409ed51b8f18c5e`, name `Workflow Status Postgres`.
-4. Copy the import JSON into the n8n container.
-5. Import and publish:
+   - telemetry import only: all Postgres telemetry nodes get credential id `wspg_a409ed51b8f18c5e`, name `Workflow Status Postgres`.
+5. Copy the import JSON into the n8n container.
+6. Import and publish:
 
 ```bash
-docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n import:workflow --input=/tmp/email-organiser-import.json --projectId=VYxWLhVfItgsWnnA
-docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n publish:workflow --id=fm6pLPnZWsGfK1oH
-docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n update:workflow --id=fm6pLPnZWsGfK1oH --active=false
+docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n import:workflow --input=/tmp/<workflow-import>.json --projectId=VYxWLhVfItgsWnnA
+docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n publish:workflow --id=<workflow-id>
+docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n update:workflow --id=fm6pLPnZWsGfK1oH --active=true
+docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n update:workflow --id=bXNCHRxwqXoOeePH --active=false
 ```
 
-6. Restart n8n because the CLI warns that imports may not affect a running instance until restart:
+7. Restart n8n because the CLI warns that imports may not affect a running instance until restart:
 
 ```bash
 docker restart n8n-ew4sow0ws8kggowogk4owk4c
 ```
 
-7. Wait for healthy:
+8. Wait for healthy:
 
 ```bash
 docker inspect --format "{{.State.Health.Status}}" n8n-ew4sow0ws8kggowogk4owk4c
@@ -661,10 +668,10 @@ For a capped setup run, import a temporary copy with:
 - `maxBatches=1`
 - workflow inactive after import
 
-Then execute once:
+Then execute the telemetry workflow once:
 
 ```bash
-docker exec -e N8N_RUNNERS_BROKER_PORT=5681 -e N8N_RUNNERS_TASK_REQUEST_TIMEOUT=240 n8n-ew4sow0ws8kggowogk4owk4c n8n execute --id=fm6pLPnZWsGfK1oH
+docker exec -e N8N_RUNNERS_BROKER_PORT=5681 -e N8N_RUNNERS_TASK_REQUEST_TIMEOUT=240 n8n-ew4sow0ws8kggowogk4owk4c n8n execute --id=bXNCHRxwqXoOeePH
 ```
 
 Do not paste the CLI output back to the user. It can include private email data. Instead query `workflow_status` for sanitized verification.
@@ -772,7 +779,7 @@ Status app highlights:
 - URL: `https://n8n-workflow-status.home.brearley.net`
 - stack: Next.js App Router, React, Tailwind CSS 4, shadcn/ui, PostgreSQL
 - no built-in auth, private access via Pangolin/firewall
-- reads `workflow_status` Postgres
+- reads `workflow_status` Postgres written by `Email Organiser (with telemetry)`
 - enriches workflow metadata through n8n API using server-side `N8N_API_KEY`
 - shows workflow list, global token totals, run history, current step, step input/output/error JSON, email rows, AI attempts, label actions, and errors
 
