@@ -100,12 +100,14 @@ Live credential references that may need to be injected into workflow JSON befor
 
 These IDs are not secrets. Do not document or print credential values.
 
-Latest verified live state on 2026-06-10:
+Latest verified live state on 2026-06-11:
 
+- `n8n-flows` main includes PR #5, merge commit `cfa2d64d27d379160054cac20e86767dfded7688`;
+- backfill execution `920` was stopped by request and n8n reported status `canceled`;
 - `Email Organiser` (`fm6pLPnZWsGfK1oH`) was imported from production code, published, restarted into effect, and left active;
-- production live metadata: `nodeCount=22`, `triggerCount=2`, `telemetryLikeCount=0`;
+- production live metadata: `active=true`, `nodeCount=22`, `telemetryLikeCount=0`, model `igorls/gemma4-e4b-classifier:latest`;
 - `Email Organiser (with telemetry)` (`bXNCHRxwqXoOeePH`) was imported from telemetry code, published, restarted into effect, and left inactive;
-- telemetry live metadata: `nodeCount=92`, `triggerCount=2`, `telemetryLikeCount=73`;
+- telemetry live metadata: `active=false`, `nodeCount=92`, `telemetryLikeCount=73`, model `igorls/gemma4-e4b-classifier:latest`;
 - telemetry start nodes were verified to write workflow ID `bXNCHRxwqXoOeePH` and workflow name `Email Organiser (with telemetry)`;
 - no workflow execution output or private email content was read.
 
@@ -340,7 +342,7 @@ curl -sS \
 
 This returns the workflow graph. Do not print the full response unless the user explicitly needs it and it has been checked for sensitive data. For normal diagnostics, reduce it to metadata such as workflow ID, name, active state, node count, trigger count, updated time, and settings keys.
 
-Safe write-path verification is only safe against a workflow that is already inactive. As of 2026-06-10, that is the telemetry workflow, not production:
+Safe write-path verification is only safe against a workflow that is already inactive. As of 2026-06-11, that is the telemetry workflow, not production:
 
 ```bash
 curl -sS -X POST \
@@ -349,10 +351,10 @@ curl -sS -X POST \
   https://n8n.home.ericbrearley.com/api/v1/workflows/bXNCHRxwqXoOeePH/deactivate
 ```
 
-Current verified read-only metadata on 2026-06-10:
+Current verified read-only metadata on 2026-06-11:
 
-- `Email Organiser` returned `active=true`, `nodeCount=22`, and no telemetry nodes;
-- `Email Organiser (with telemetry)` returned `active=false`, `nodeCount=92`, and 73 telemetry-like nodes;
+- `Email Organiser` returned `active=true`, `nodeCount=22`, no telemetry nodes, and model `igorls/gemma4-e4b-classifier:latest`;
+- `Email Organiser (with telemetry)` returned `active=false`, `nodeCount=92`, 73 telemetry-like nodes, and model `igorls/gemma4-e4b-classifier:latest`;
 - no private email execution data was read or printed.
 
 Current n8n public API docs show workflow updates use `PUT /workflows/{id}` with required fields `name`, `nodes`, `connections`, and `settings`, while `active`, `id`, `createdAt`, `updatedAt`, and `tags` are read-only. Manage active state separately with activate/deactivate endpoints. Be careful with full-workflow `PUT`: live exports may include settings such as `availableInMCP` that the public API schema can reject, and graph updates can affect the live draft. Prefer MCP `update_workflow` or the established import flow for workflow graph changes unless you have first sanitized and validated the public API payload.
@@ -637,13 +639,14 @@ Known successful import pattern:
    - `Ollama Chat Model` gets Ollama credential id `aR1KuRnGv6tTTkQ8`, name `Ollama account`.
    - telemetry import only: all Postgres telemetry nodes get credential id `wspg_a409ed51b8f18c5e`, name `Workflow Status Postgres`.
 5. Copy the import JSON into the n8n container.
-6. Import and publish:
+6. Import, publish production, and keep telemetry inactive:
 
 ```bash
-docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n import:workflow --input=/tmp/<workflow-import>.json --projectId=VYxWLhVfItgsWnnA
-docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n publish:workflow --id=<workflow-id>
-docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n update:workflow --id=fm6pLPnZWsGfK1oH --active=true
-docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n update:workflow --id=bXNCHRxwqXoOeePH --active=false
+docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n import:workflow --input=/tmp/email-organiser-production-import.json --projectId=VYxWLhVfItgsWnnA
+docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n import:workflow --input=/tmp/email-organiser-telemetry-import.json --projectId=VYxWLhVfItgsWnnA
+docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n publish:workflow --id=fm6pLPnZWsGfK1oH
+docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n publish:workflow --id=bXNCHRxwqXoOeePH
+docker exec n8n-ew4sow0ws8kggowogk4owk4c n8n unpublish:workflow --id=bXNCHRxwqXoOeePH
 ```
 
 7. Restart n8n because the CLI warns that imports may not affect a running instance until restart:
@@ -658,7 +661,7 @@ docker restart n8n-ew4sow0ws8kggowogk4owk4c
 docker inspect --format "{{.State.Health.Status}}" n8n-ew4sow0ws8kggowogk4owk4c
 ```
 
-The `update:workflow` command is deprecated in n8n but worked during setup. If current docs show a replacement such as `unpublish:workflow`, prefer current official behavior after checking ctx7.
+On 2026-06-11, n8n `2.23.4` warned that `update:workflow --active=true` is deprecated in favor of `publish:workflow`, and `update:workflow --active=false` is deprecated in favor of `unpublish:workflow`. Prefer `publish:workflow`/`unpublish:workflow` after checking ctx7 when quota/access allows.
 
 ## Live Validation Without Leaking Email Content
 
@@ -740,7 +743,7 @@ import json
 from pathlib import Path
 from subprocess import run, PIPE
 wrapper = "const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;\nnew AsyncFunction('$input', '$json', '$', %r);\n"
-for wf_path in [Path('email-classifer/workflow.json'), Path('email-classifer/workflow-imap-trigger.json')]:
+for wf_path in [Path('email-classifer/workflow.json'), Path('email-classifer/workflow-imap-trigger.json'), Path('email-classifer/workflow-with-telemetry.json')]:
     wf = json.loads(wf_path.read_text())
     for node in wf['nodes']:
         if node.get('type') == 'n8n-nodes-base.code':
